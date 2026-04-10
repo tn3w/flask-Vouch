@@ -1,0 +1,149 @@
+[
+    {
+        "name": "cloudflare-workers",
+        "action": "DENY",
+        "headers": { "CF-Worker": ".*" }
+    },
+    {
+        "name": "known-bad",
+        "action": "DENY",
+        "user_agent": "(?i:Sogou|MJ12bot|AhrefsBot|SemrushBot|DotBot|BLEXBot|DataForSeoBot|Bytedance)"
+    },
+    {
+        "name": "vuln-scanners",
+        "action": "DENY",
+        "user_agent": "(?i:Nmap|Nikto|sqlmap|ZmEu|masscan|WPScan|Acunetix|Nessus|dirbuster)"
+    },
+    {
+        "name": "wp-scanners",
+        "action": "DENY",
+        "path": "(?i:wp-login|wp-admin|xmlrpc\\.php|wp-config)"
+    },
+    {
+        "name": "dotfile-probes",
+        "action": "DENY",
+        "path": "/\\.(env|git|svn|htaccess|htpasswd|DS_Store|aws)"
+    },
+    {
+        "name": "shell-probes",
+        "action": "DENY",
+        "path": "(?i:\\.(php|cgi|asp|aspx|jsp)$|/cgi-bin/|/shell|/cmd)"
+    },
+    {
+        "name": "traversal-attempts",
+        "action": "DENY",
+        "path": "(\\.\\./|%2e%2e|%252e)"
+    },
+    {
+        "name": "well-known",
+        "action": "ALLOW",
+        "path": "^/.well-known/"
+    },
+    {
+        "name": "favicon",
+        "action": "ALLOW",
+        "path": "^/favicon\\.ico$"
+    },
+    {
+        "name": "robots-txt",
+        "action": "ALLOW",
+        "path": "^/robots\\.txt$"
+    },
+    {
+        "name": "health-checks",
+        "action": "ALLOW",
+        "path": "^/(healthz?|readyz?|livez?|ping|status)$"
+    },
+    {
+        "name": "search-engines",
+        "action": "ALLOW",
+        "user_agent": "(?i:Googlebot|Bingbot|DuckDuckBot|Baiduspider|YandexBot|Applebot)"
+    },
+    {
+        "name": "feed-readers",
+        "action": "ALLOW",
+        "user_agent": "(?i:Feedly|NewsBlur|Miniflux|FreshRSS|Inoreader|Feedbin|Tiny Tiny RSS)"
+    },
+    {
+        "name": "monitoring",
+        "action": "ALLOW",
+        "user_agent": "(?i:UptimeRobot|Pingdom|StatusCake|Better Uptime|Checkly)"
+    },
+    {
+        "name": "link-previews",
+        "action": "ALLOW",
+        "user_agent": "(?i:Slackbot|Discordbot|Twitterbot|facebookexternalhit|LinkedInBot|WhatsApp|TelegramBot)"
+    },
+    {
+        "name": "archive-org",
+        "action": "ALLOW",
+        "user_agent": "(?i:archive\\.org_bot|Wayback)"
+    },
+    {
+        "name": "ai-bots",
+        "action": "CHALLENGE",
+        "difficulty": 14,
+        "user_agent": "(?i:GPTBot|ChatGPT|Claude-Web|Anthropic|CCBot|Google-Extended|Bytespider|PetalBot|Diffbot|Cohere-ai|PerplexityBot|YouBot)"
+    },
+    {
+        "name": "headless-browsers",
+        "action": "CHALLENGE",
+        "difficulty": 12,
+        "user_agent": "(?i:HeadlessChrome|PhantomJS|Playwright|Puppeteer|Selenium)"
+    },
+    {
+        "name": "aggressive-scrapers",
+        "action": "CHALLENGE",
+        "difficulty": 12,
+        "user_agent": "(?i:Scrapy|colly|HttpClient|python-requests|Go-http-client|Java/|libwww-perl|mechanize)"
+    },
+    {
+        "name": "empty-ua",
+        "action": "CHALLENGE",
+        "user_agent": "^$"
+    },
+    {
+        "name": "generic-browser",
+        "action": "CHALLENGE",
+        "user_agent": "Mozilla"
+    },
+    {
+        "name": "ip-blocklist",
+        "action": "CHALLENGE",
+        "blocklist": true
+    },
+    {
+        "name": "bogon-origin",
+        "action": "CHALLENGE",
+        "bogon_ip": true
+    },
+    {
+        "name": "crawler",
+        "action": "CHALLENGE",
+        "crawler": true
+    },
+    {
+        "name": "curl-wget",
+        "action": "WEIGH",
+        "weight": 3,
+        "user_agent": "(?i:^curl/|^Wget/|^HTTPie/|^fetch/)"
+    },
+    {
+        "name": "missing-accept",
+        "action": "WEIGH",
+        "weight": 3,
+        "headers": { "Accept": "^$" }
+    },
+    {
+        "name": "missing-accept-language",
+        "action": "WEIGH",
+        "weight": 2,
+        "headers": { "Accept-Language": "^$" }
+    },
+    {
+        "name": "connection-close",
+        "action": "WEIGH",
+        "weight": 2,
+        "headers": { "Connection": "(?i:^close$)" }
+    }
+]

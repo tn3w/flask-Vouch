@@ -1,0 +1,78 @@
+[project]
+name = "flask-Vouch"
+version = "1.0.0"
+description = "Bot-challenge Python middleware issuing brief challenges, granting solvers signed access cookies."
+readme = "README.md"
+authors = [
+    {name = "TN3W", email = "tn3w@protonmail.com"}
+]
+license = "Apache-2.0"
+license-files = ["LICENSE"]
+requires-python = ">=3.9"
+dependencies = ["flask>=2.0"]
+classifiers = [
+    "Development Status :: 5 - Production/Stable",
+    "Intended Audience :: Developers",
+    "Operating System :: OS Independent",
+    "Programming Language :: Python",
+    "Programming Language :: Python :: 3",
+    "Programming Language :: Python :: 3.9",
+    "Programming Language :: Python :: 3.10",
+    "Programming Language :: Python :: 3.11",
+    "Programming Language :: Python :: 3.12",
+    "Programming Language :: Python :: 3.13",
+    "Topic :: Internet :: WWW/HTTP",
+    "Topic :: Internet :: WWW/HTTP :: WSGI :: Middleware",
+    "Topic :: Software Development :: Libraries :: Python Modules",
+    "Topic :: Security",
+]
+keywords = [
+    "flask", "middleware", "bot", "bot-detection", "challenge",
+    "captcha", "proof-of-work", "security", "access-control",
+    "signed-cookie", "bot-challenge", "anti-bot",
+]
+
+[project.urls]
+Homepage = "https://github.com/tn3w/flask-Vouch"
+Repository = "https://github.com/tn3w/flask-Vouch.git"
+Issues = "https://github.com/tn3w/flask-Vouch/issues"
+
+[build-system]
+requires = ["setuptools>=69", "wheel"]
+build-backend = "setuptools.build_meta"
+
+[tool.setuptools]
+packages = ["flask_vouch", "flask_vouch.challenges", "flask_vouch.extras"]
+
+[tool.setuptools.package-data]
+flask_vouch = [
+    "rules.json",
+    "challenges/templates/*.html",
+    "challenges/models/*.bin",
+    "challenges/models/*.gltf",
+    "extras/templates/*.html",
+]
+
+[tool.pytest.ini_options]
+testpaths = ["tests"]
+addopts = """--cov=flask_vouch --cov-report=term-missing --cov-fail-under=90 -v \
+  --cov-config=pyproject.toml"""
+
+[tool.coverage.run]
+omit = [
+    "flask_vouch/challenges/audio_captcha.py",
+    "flask_vouch/challenges/character_captcha.py",
+    "flask_vouch/challenges/circle_captcha.py",
+    "flask_vouch/challenges/datasets.py",
+    "flask_vouch/challenges/image_captcha.py",
+    "flask_vouch/challenges/image_grid_captcha.py",
+    "flask_vouch/challenges/media.py",
+    "flask_vouch/challenges/navigator_attestation.py",
+    "flask_vouch/challenges/rotation_captcha.py",
+    "flask_vouch/challenges/sliding_captcha.py",
+    "flask_vouch/redis.py",
+    "flask_vouch/extras/error_handler.py",
+    "flask_vouch/extras/rate_limiter.py",
+    "flask_vouch/extras/third_party_captcha.py",
+    "flask_vouch/challenges/third_party_captcha.py",
+]

@@ -1,0 +1,294 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <meta name="robots" content="noindex" />
+        <title>Verifying</title>
+        <style>
+            :root {
+                --bg: #f5f5f5;
+                --text: #111;
+                --surface: #ddd;
+                --muted: #777;
+                --link: #555;
+                --error: #c00;
+                --accent: {{ACCENT_COLOR}};
+            }
+            @media (prefers-color-scheme: dark) {
+                :root {
+                    --bg: #0a0a0a;
+                    --text: #e0e0e0;
+                    --surface: #222;
+                    --muted: #555;
+                    --link: #777;
+                    --error: #f55;
+                }
+            }
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            body {
+                font-family: system-ui, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                background: var(--bg);
+                color: var(--text);
+            }
+            .box {
+                text-align: center;
+                max-width: 420px;
+                padding: 2rem;
+            }
+            h2 {
+                margin-bottom: 1rem;
+                font-weight: 500;
+            }
+            #status {
+                color: var(--muted);
+                margin-bottom: 1.5rem;
+                font-size: 0.9rem;
+            }
+            .bar {
+                width: 100%;
+                height: 4px;
+                background: var(--surface);
+                border-radius: 2px;
+                overflow: hidden;
+            }
+            .fill {
+                height: 100%;
+                background: var(--accent);
+                width: 0;
+                transition: width 0.3s;
+            }
+            noscript {
+                color: var(--error);
+                display: block;
+                margin-top: 1rem;
+            }
+            .branding {
+                margin-top: 1.5rem;
+                font-size: 0.7rem;
+                color: var(--muted);
+            }
+            .branding a {
+                color: var(--link);
+                text-decoration: none;
+            }
+            .branding a:hover {
+                text-decoration: underline;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="box">
+            <h2>Checking your browser</h2>
+            <p id="status">Starting challenge&#8230;</p>
+            <div class="bar"><div class="fill" id="bar"></div></div>
+            <noscript>JavaScript is required.</noscript>
+            {{BRANDING}}
+        </div>
+        <script>
+            (function () {
+                var C = JSON.parse('{{CHALLENGE_DATA}}');
+                var THREADS = navigator.hardwareConcurrency || 4;
+                var solved = false,
+                    t0 = Date.now(),
+                    total = 0;
+
+                var workerSrc = `
+var K = new Uint32Array([
+    0x428a2f98,0x71374491,0xb5c0fbcf,0xe9b5dba5,0x3956c25b,0x59f111f1,0x923f82a4,0xab1c5ed5,
+    0xd807aa98,0x12835b01,0x243185be,0x550c7dc3,0x72be5d74,0x80deb1fe,0x9bdc06a7,0xc19bf174,
+    0xe49b69c1,0xefbe4786,0x0fc19dc6,0x240ca1cc,0x2de92c6f,0x4a7484aa,0x5cb0a9dc,0x76f988da,
+    0x983e5152,0xa831c66d,0xb00327c8,0xbf597fc7,0xc6e00bf3,0xd5a79147,0x06ca6351,0x14292967,
+    0x27b70a85,0x2e1b2138,0x4d2c6dfc,0x53380d13,0x650a7354,0x766a0abb,0x81c2c92e,0x92722c85,
+    0xa2bfe8a1,0xa81a664b,0xc24b8b70,0xc76c51a3,0xd192e819,0xd6990624,0xf40e3585,0x106aa070,
+    0x19a4c116,0x1e376c08,0x2748774c,0x34b0bcb5,0x391c0cb3,0x4ed8aa4a,0x5b9cca4f,0x682e6ff3,
+    0x748f82ee,0x78a5636f,0x84c87814,0x8cc70208,0x90befffa,0xa4506ceb,0xbef9a3f7,0xc67178f2
+]);
+var IV = [0x6a09e667,0xbb67ae85,0x3c6ef372,0xa54ff53a,0x510e527f,0x9b05688c,0x1f83d9ab,0x5be0cd19];
+var W = new Int32Array(64);
+
+function sha256Raw(data, len) {
+    var bl = len * 8, pl = (len + 9 + 63) & ~63;
+    var p = new Uint8Array(pl);
+    for (var i = 0; i < len; i++) p[i] = data[i];
+    p[len] = 0x80;
+    p[pl-4] = (bl>>>24)&0xff; p[pl-3] = (bl>>>16)&0xff;
+    p[pl-2] = (bl>>>8)&0xff;  p[pl-1] = bl&0xff;
+    var s = new Int32Array(8);
+    for (var i = 0; i < 8; i++) s[i] = IV[i];
+    for (var off = 0; off < pl; off += 64) {
+        for (var i = 0; i < 16; i++)
+            W[i] = (p[off+i*4]<<24)|(p[off+i*4+1]<<16)|(p[off+i*4+2]<<8)|p[off+i*4+3];
+        for (var i = 16; i < 64; i++) {
+            var w15=W[i-15], w2=W[i-2];
+            W[i] = (W[i-16] + ((w15>>>7|w15<<25)^(w15>>>18|w15<<14)^(w15>>>3))
+                  + W[i-7]  + ((w2>>>17|w2<<15)^(w2>>>19|w2<<13)^(w2>>>10))) | 0;
+        }
+        var a=s[0],b=s[1],c=s[2],d=s[3],e=s[4],f=s[5],g=s[6],h=s[7];
+        for (var i = 0; i < 64; i++) {
+            var S1 = (e>>>6|e<<26)^(e>>>11|e<<21)^(e>>>25|e<<7);
+            var t1 = (h + S1 + (e&f^~e&g) + K[i] + W[i]) | 0;
+            var S0 = (a>>>2|a<<30)^(a>>>13|a<<19)^(a>>>22|a<<10);
+            var t2 = (S0 + (a&b^a&c^b&c)) | 0;
+            h=g; g=f; f=e; e=(d+t1)|0; d=c; c=b; b=a; a=(t1+t2)|0;
+        }
+        s[0]=(s[0]+a)|0; s[1]=(s[1]+b)|0; s[2]=(s[2]+c)|0; s[3]=(s[3]+d)|0;
+        s[4]=(s[4]+e)|0; s[5]=(s[5]+f)|0; s[6]=(s[6]+g)|0; s[7]=(s[7]+h)|0;
+    }
+    return s;
+}
+
+function wLE(b, o, v) {
+    b[o]=v&0xff; b[o+1]=(v>>>8)&0xff; b[o+2]=(v>>>16)&0xff; b[o+3]=(v>>>24)&0xff;
+}
+
+function d2b(state, target, off) {
+    for (var i = 0; i < 8; i++) {
+        var w = state[i];
+        target[off++]=(w>>>24)&0xff; target[off++]=(w>>>16)&0xff;
+        target[off++]=(w>>>8)&0xff;  target[off++]=w&0xff;
+    }
+}
+
+function hc(ctr, sc, len) { wLE(sc, 0, ctr); return sha256Raw(sc, len); }
+
+function clz(bytes) {
+    for (var i = 0; i < bytes.length; i++) {
+        if (!bytes[i]) continue;
+        var b = bytes[i], n = 0;
+        while (!(b & 0x80)) { n++; b <<= 1; }
+        return i * 8 + n;
+    }
+    return bytes.length * 8;
+}
+
+function mine(prefix, difficulty, spaceCost, timeCost, delta, workerId, workerCount) {
+    var enc = new TextEncoder();
+    var pb = enc.encode(prefix);
+    var input = new Uint8Array(pb.length + 20);
+    input.set(pb);
+    var buf = new Uint8Array(spaceCost * 32);
+    var sc = new Uint8Array(Math.max(4 + pb.length + 20, 68));
+    var ps = new Uint8Array(16);
+    var res = new Uint8Array(32);
+    var nonce = workerId, reported = 0;
+
+    while (true) {
+        var ns = nonce.toString();
+        for (var i = 0; i < ns.length; i++) input[pb.length + i] = ns.charCodeAt(i);
+        var inputLen = pb.length + ns.length;
+        var ctr = 0;
+
+        for (var i = 0; i < inputLen; i++) sc[4 + i] = input[i];
+        d2b(hc(ctr++, sc, 4 + inputLen), buf, 0);
+        for (var i = 1; i < spaceCost; i++) {
+            sc.set(buf.subarray((i-1)*32, i*32), 4);
+            d2b(hc(ctr++, sc, 36), buf, i * 32);
+        }
+
+        for (var t = 0; t < timeCost; t++) {
+            for (var i = 0; i < spaceCost; i++) {
+                var prev = (i || spaceCost) - 1;
+                sc.set(buf.subarray(prev*32, (prev+1)*32), 4);
+                sc.set(buf.subarray(i*32, (i+1)*32), 36);
+                d2b(hc(ctr++, sc, 68), buf, i * 32);
+
+                for (var j = 0; j < delta; j++) {
+                    wLE(ps, 0, ctr++); wLE(ps, 4, t); wLE(ps, 8, i); wLE(ps, 12, j);
+                    var other = (sha256Raw(ps, 16)[0] >>> 0) % spaceCost;
+                    sc.set(buf.subarray(i*32, (i+1)*32), 4);
+                    sc.set(buf.subarray(other*32, (other+1)*32), 36);
+                    d2b(hc(ctr++, sc, 68), buf, i * 32);
+                }
+            }
+        }
+
+        res.set(buf.subarray((spaceCost - 1) * 32));
+        if (clz(res) >= difficulty) {
+            self.postMessage({ done: true, nonce: nonce, hashes: reported + 1 });
+            return;
+        }
+
+        nonce += workerCount;
+        reported++;
+        if (reported % 5 === 0) { self.postMessage({ done: false, hashes: 5 }); reported = 0; }
+    }
+}
+
+self.onmessage = function (e) {
+    var d = e.data;
+    mine(d.prefix, d.difficulty, d.spaceCost, d.timeCost, d.delta, d.workerId, d.workerCount);
+};
+`;
+
+                var url = URL.createObjectURL(
+                    new Blob([workerSrc], { type: 'application/javascript' })
+                );
+                var workers = [];
+
+                for (var i = 0; i < THREADS; i++) {
+                    var w = new Worker(url);
+                    w.onmessage = (function () {
+                        return function (e) {
+                            if (e.data.done) {
+                                if (solved) return;
+                                solved = true;
+                                workers.forEach(function (x) {
+                                    x.terminate();
+                                });
+                                done(e.data.nonce);
+                            } else {
+                                total += e.data.hashes;
+                                var el = (Date.now() - t0) / 1e3;
+                                var pct = Math.min(95, (total / Math.pow(2, C.difficulty)) * 100);
+                                document.getElementById('bar').style.width = pct + '%';
+                                document.getElementById('status').textContent =
+                                    'Working\u2026 ' + Math.round(total / el) + ' H/s';
+                            }
+                        };
+                    })();
+                    w.postMessage({
+                        prefix: C.data,
+                        difficulty: C.difficulty,
+                        spaceCost: C.spaceCost,
+                        timeCost: C.timeCost,
+                        delta: C.delta,
+                        workerId: i,
+                        workerCount: THREADS,
+                    });
+                    workers.push(w);
+                }
+
+                function done(nonce) {
+                    document.getElementById('status').textContent = 'Verified!';
+                    document.getElementById('bar').style.width = '100%';
+                    var f = document.createElement('form');
+                    f.method = 'POST';
+                    f.action = C.verifyPath;
+                    [
+                        ['id', C.id],
+                        ['nonce', nonce],
+                        ['redirect', C.redirect],
+                        ['csrf_token', C.csrfToken],
+                    ].forEach(function (p) {
+                        var inp = document.createElement('input');
+                        inp.type = 'hidden';
+                        inp.name = p[0];
+                        inp.value = p[1];
+                        f.appendChild(inp);
+                    });
+                    document.body.appendChild(f);
+                    f.submit();
+                }
+            })();
+        </script>
+    </body>
+</html>
