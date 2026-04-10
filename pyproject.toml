@@ -33,7 +33,7 @@ keywords = [
 ]
 
 [project.urls]
-Homepage = "https://github.com/tn3w/flask-Vouch"
+Homepage = "https://flask-vouch.tn3w.dev"
 Repository = "https://github.com/tn3w/flask-Vouch.git"
 Issues = "https://github.com/tn3w/flask-Vouch/issues"
 

@@ -1,0 +1,185 @@
+"""Generate docs/index-build.html with live challenge previews injected."""
+
+import json
+import re
+import secrets
+import time
+from pathlib import Path
+
+from flask_vouch.challenges import (
+    SHA256,
+    AudioCaptcha,
+    ChallengeBase,
+    ChallengeType,
+    CharacterCaptcha,
+    CircleCaptcha,
+    ImageCaptcha,
+    ImageGridCaptcha,
+    NavigatorAttestation,
+    RotationCaptcha,
+    SHA256Balloon,
+    SlidingCaptcha,
+)
+from flask_vouch.engine import Engine
+
+SECRET = "preview-secret-key"
+DIFFICULTY = 10
+VERIFY_PATH = "/"
+REDIRECT = "/"
+
+FAKE_REQUEST = {
+    "method": "GET",
+    "path": "/",
+    "query": "",
+    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
+    "remote_addr": "127.0.0.1",
+    "headers": {},
+    "cookies": {},
+    "form": {},
+}
+
+HANDLERS = [
+    ("SHA-256 Balloon", "sha256-balloon", SHA256Balloon(), "sha256_balloon"),
+    ("SHA-256 PoW", "sha256", SHA256(), "sha256"),
+    ("Character CAPTCHA", "character-captcha", CharacterCaptcha(), "character_captcha"),
+    ("Image CAPTCHA", "image-captcha", ImageCaptcha(), "image_captcha"),
+    ("Rotation CAPTCHA", "rotation-captcha", RotationCaptcha(), "rotation_captcha"),
+    ("Sliding CAPTCHA", "sliding-captcha", SlidingCaptcha(), "sliding_captcha"),
+    ("Circle CAPTCHA", "circle-captcha", CircleCaptcha(), "circle_captcha"),
+    (
+        "Image Grid CAPTCHA",
+        "image-grid-captcha",
+        ImageGridCaptcha(),
+        "image_grid_captcha",
+    ),
+    ("Audio CAPTCHA", "audio-captcha", AudioCaptcha(), "audio_captcha"),
+    (
+        "Navigator Attestation",
+        "navigator-attestation",
+        NavigatorAttestation(),
+        "navigator_attestation",
+    ),
+]
+
+
+def make_challenge(handler) -> ChallengeBase:
+    difficulty = handler.to_difficulty(DIFFICULTY)
+    return ChallengeBase(
+        id=secrets.token_urlsafe(24),
+        random_data=handler.generate_random_data(difficulty),
+        difficulty=difficulty,
+        ip_hash="preview",
+        created_at=time.time(),
+        challenge_type=handler.challenge_type,
+    )
+
+
+def render_challenge_html(handler, challenge) -> str:
+    payload = handler.render_payload(challenge, VERIFY_PATH, REDIRECT)
+    payload["csrfToken"] = "preview-csrf-token"
+    payload_json = json.dumps(payload)
+    safe = (
+        payload_json.replace("'", "\\u0027")
+        .replace("<", "\\u003c")
+        .replace(">", "\\u003e")
+    )
+    html = (
+        handler.template.replace("{{CHALLENGE_DATA}}", safe)
+        .replace("{{BRANDING}}", "")
+        .replace("{{ERROR}}", "")
+        .replace("{{ACCENT_COLOR}}", "#b85c00")
+    )
+    for key, value in payload.items():
+        html = html.replace(f"{{{{{key}}}}}", str(value))
+    return html
+
+
+def extract_body_and_scripts(full_html: str) -> tuple[str, str]:
+    """Extract body content and scripts, remove redirects."""
+    body_match = re.search(
+        r"<body[^>]*>(.*?)</body>", full_html, re.DOTALL | re.IGNORECASE
+    )
+    body = body_match.group(1).strip() if body_match else full_html
+
+    style_blocks = re.findall(
+        r"<style[^>]*>.*?</style>", full_html, re.DOTALL | re.IGNORECASE
+    )
+    styles = "\n".join(style_blocks)
+
+    styles = re.sub(r"body\s*\{[^}]*\}", "", styles, flags=re.DOTALL)
+
+    return body, styles
+
+
+def build_challenge_section(
+    rendered_challenges: list[tuple[str, str, str, str]],
+) -> str:
+    nav_items = "".join(
+        f'<button class="tab-btn" data-tab="{slug}" onclick="showTab(\'{slug}\')">'
+        f"{label}</button>"
+        for label, slug, _, _ in rendered_challenges
+    )
+
+    panels = ""
+    for i, (label, slug, body, styles) in enumerate(rendered_challenges):
+        active = " active" if i == 0 else ""
+        panels += f"""
+<div class="tab-panel{active}" id="panel-{slug}">
+    <style>{styles}</style>
+    <div class="challenge-wrap">
+        {body}
+    </div>
+</div>"""
+
+    first_slug = rendered_challenges[0][1] if rendered_challenges else ""
+
+    return f"""<div class="detector">
+                    <div class="detector-header">
+                        <span class="detector-title">Challenge Previews</span>
+                    </div>
+                    <div class="tabs" id="tabs">
+                        {nav_items}
+                    </div>
+                    {panels}
+                </div>
+                <script>
+                    function showTab(slug) {{
+                        document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
+                        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
+                        const panel = document.getElementById('panel-' + slug);
+                        if (panel) panel.classList.add('active');
+                        document.querySelectorAll('.tab-btn[data-tab="' + slug + '"]').forEach(b => b.classList.add('active'));
+                    }}
+                    showTab('{first_slug}');
+                </script>""".replace("f.submit();", "")
+
+
+def main():
+    rendered = []
+    for label, slug, handler, template_name in HANDLERS:
+        print(f"Rendering {label}...")
+        try:
+            challenge = make_challenge(handler)
+            full_html = render_challenge_html(handler, challenge)
+            body, styles = extract_body_and_scripts(full_html)
+            rendered.append((label, slug, body, styles))
+            print(f"  OK")
+        except Exception as exc:
+            print(f"  FAILED: {exc}")
+
+    challenge_section = build_challenge_section(rendered)
+
+    index_path = Path(__file__).parent / "index.html"
+    index_html = index_path.read_text(encoding="utf-8")
+
+    index_html = index_html.replace(
+        "<!-- CHALLENGE_PREVIEWS_PLACEHOLDER -->", challenge_section
+    )
+
+    out = Path(__file__).parent / "index-build.html"
+    out.write_text(index_html, encoding="utf-8")
+    print(f"\nWritten to {out}")
+
+
+if __name__ == "__main__":
+    main()

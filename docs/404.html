@@ -1,0 +1,223 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>404 - Page Not Found | flask-Vouch</title>
+        <meta
+            name="description"
+            content="Page not found. Return to flask-Vouch documentation - bot challenge middleware for Flask."
+        />
+        <meta name="robots" content="noindex" />
+        <meta name="author" content="TN3W" />
+        <link rel="icon" href="favicon.ico" type="image/x-icon" />
+
+        <meta property="og:type" content="website" />
+        <meta property="og:url" content="https://flask-vouch.tn3w.dev/404.html" />
+        <meta property="og:title" content="404 - Page Not Found | flask-Vouch" />
+        <meta
+            property="og:description"
+            content="Page not found. Return to flask-Vouch documentation - bot challenge middleware for Flask."
+        />
+        <meta property="og:site_name" content="flask-Vouch" />
+
+        <meta name="twitter:card" content="summary" />
+        <meta name="twitter:title" content="404 - Page Not Found | flask-Vouch" />
+        <meta
+            name="twitter:description"
+            content="Page not found. Return to flask-Vouch documentation - bot challenge middleware for Flask."
+        />
+        <style>
+            *,
+            *::before,
+            *::after {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
+            :root {
+                --bg: #f5f2eb;
+                --surface: #edeae0;
+                --border: #c8c2ae;
+                --text: #1a1714;
+                --text-dim: #5c5545;
+                --text-muted: #7a7060;
+                --accent: #b85c00;
+                --accent-glow: #b85c0033;
+                --radius: 10px;
+            }
+            html,
+            body {
+                height: 100%;
+            }
+            body {
+                background: var(--bg);
+                color: var(--text);
+                font-family: 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                overflow: hidden;
+            }
+
+            .ambient {
+                position: fixed;
+                inset: 0;
+                pointer-events: none;
+                background:
+                    radial-gradient(ellipse 50% 40% at 50% 40%, #b85c0010 0%, transparent 70%),
+                    radial-gradient(ellipse 60% 50% at 30% 70%, #b85c000a 0%, transparent 70%);
+            }
+            .grain {
+                position: fixed;
+                inset: 0;
+                pointer-events: none;
+                z-index: 9999;
+                opacity: 0.06;
+                background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+                background-repeat: repeat;
+                background-size: 180px;
+            }
+
+            .card {
+                position: relative;
+                z-index: 1;
+                text-align: center;
+                max-width: 480px;
+                padding: 0 24px;
+                animation: fadeIn 0.6s ease;
+            }
+            @keyframes fadeIn {
+                from {
+                    opacity: 0;
+                    transform: translateY(12px);
+                }
+                to {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+            }
+
+            .error-code {
+                font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+                font-size: clamp(5rem, 15vw, 8rem);
+                font-weight: 700;
+                letter-spacing: -0.04em;
+                line-height: 1;
+                color: var(--text-muted);
+                position: relative;
+            }
+            .error-code span {
+                color: var(--accent);
+                text-shadow: 0 0 40px #b85c0033;
+            }
+
+            .title {
+                font-family: 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
+                font-size: 1.5rem;
+                color: var(--text);
+                margin-top: 20px;
+            }
+
+            .desc {
+                color: var(--text-dim);
+                font-size: 0.92rem;
+                margin-top: 10px;
+                line-height: 1.65;
+            }
+            .desc code {
+                font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+                font-size: 0.82rem;
+                background: var(--surface);
+                border: 1px solid var(--border);
+                padding: 2px 8px;
+                border-radius: 5px;
+            }
+            .actions {
+                margin-top: 32px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                gap: 12px;
+                flex-wrap: wrap;
+            }
+            .btn {
+                display: inline-flex;
+                align-items: center;
+                gap: 7px;
+                font-family:
+                    system-ui,
+                    -apple-system,
+                    'Segoe UI',
+                    sans-serif;
+                font-size: 0.85rem;
+                font-weight: 500;
+                padding: 10px 22px;
+                border-radius: var(--radius);
+                text-decoration: none;
+                transition: all 0.2s;
+                cursor: pointer;
+                border: none;
+            }
+            .btn-primary {
+                background: var(--accent);
+                color: #ffffff;
+            }
+            .btn-primary:hover {
+                background: #9e4e00;
+                box-shadow: 0 0 0 4px var(--accent-glow);
+            }
+            .btn-secondary {
+                background: transparent;
+                color: var(--text-dim);
+                border: 1px solid var(--border);
+            }
+            .btn-secondary:hover {
+                color: var(--text);
+                border-color: var(--text-muted);
+                background: var(--surface);
+            }
+
+            .bot-joke {
+                margin-top: 48px;
+                font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+                font-size: 0.72rem;
+                color: var(--text-muted);
+            }
+        </style>
+    </head>
+    <body>
+        <div class="ambient"></div>
+        <div class="grain"></div>
+
+        <main class="card">
+            <div class="error-code">4<span>0</span>4</div>
+            <h1 class="title">Page not found</h1>
+            <p class="desc">
+                The page you're looking for doesn't exist or has been moved. If you're a bot, Vouch
+                would have already issued a challenge.
+            </p>
+            <div class="actions">
+                <a class="btn btn-primary" href="./">Back to docs</a>
+                <a
+                    class="btn btn-secondary"
+                    href="https://github.com/tn3w/flask-Vouch"
+                    target="_blank"
+                    rel="noopener"
+                    >View on GitHub</a
+                >
+            </div>
+            <p class="bot-joke">
+                vouch.process_request(req) &rarr; <span id="verdict">evaluating...</span>
+            </p>
+        </main>
+
+        <script>
+            const el = document.getElementById('verdict');
+            setTimeout(() => {
+                el.textContent = 'allow';
+                el.style.color = '#2d7a3a';
+            }, 1200);
+        </script>
+    </body>
+</html>

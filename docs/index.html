@@ -1,0 +1,764 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="UTF-8" />
+        <meta name="viewport" content="width=device-width, initial-scale=1.0" />
+        <title>flask-Vouch - Bot challenge middleware for Flask</title>
+        <meta
+            name="description"
+            content="Flask middleware that issues bot challenges and grants signed access cookies. Multiple CAPTCHA types, JWT tokens, Redis support, zero config."
+        />
+        <meta
+            name="keywords"
+            content="flask, bot protection, captcha, middleware, python, challenge, jwt, rate limiting"
+        />
+        <meta name="author" content="TN3W" />
+        <link rel="canonical" href="https://flask-vouch.tn3w.dev/" />
+        <link rel="icon" href="favicon.ico" type="image/x-icon" />
+
+        <meta property="og:type" content="website" />
+        <meta property="og:url" content="https://flask-vouch.tn3w.dev/" />
+        <meta property="og:title" content="flask-Vouch - Bot challenge middleware for Flask" />
+        <meta
+            property="og:description"
+            content="Flask middleware that issues bot challenges and grants signed access cookies. Multiple CAPTCHA types, JWT tokens, Redis support, zero config."
+        />
+        <meta property="og:site_name" content="flask-Vouch" />
+
+        <meta name="twitter:card" content="summary" />
+        <meta name="twitter:title" content="flask-Vouch - Bot challenge middleware for Flask" />
+        <meta
+            name="twitter:description"
+            content="Flask middleware that issues bot challenges and grants signed access cookies. Multiple CAPTCHA types, JWT tokens, Redis support, zero config."
+        />
+        <style>
+            *,
+            *::before,
+            *::after {
+                box-sizing: border-box;
+                margin: 0;
+                padding: 0;
+            }
+            :root {
+                --bg: #f5f2eb;
+                --surface: #edeae0;
+                --surface-2: #e4e0d4;
+                --surface-3: #d9d4c5;
+                --border: #c8c2ae;
+                --border-accent: #a89e85;
+                --text: #1a1714;
+                --text-dim: #5c5545;
+                --text-muted: #7a7060;
+                --accent: #b85c00;
+                --accent-glow: #b85c0033;
+                --green: #2d7a3a;
+                --green-dim: #2d7a3a22;
+                --red: #c0392b;
+                --red-dim: #c0392b22;
+                --amber: #8a6d00;
+                --amber-dim: #8a6d0022;
+                --radius: 10px;
+            }
+            html {
+                scroll-behavior: smooth;
+            }
+            body {
+                background: var(--bg);
+                color: var(--text);
+                font-family: 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
+                line-height: 1.6;
+                min-height: 100vh;
+                overflow-x: hidden;
+            }
+
+            .ambient {
+                position: fixed;
+                inset: 0;
+                pointer-events: none;
+                z-index: 0;
+                background:
+                    radial-gradient(ellipse 60% 40% at 20% 10%, #b85c0010 0%, transparent 70%),
+                    radial-gradient(ellipse 50% 50% at 80% 80%, #2d7a3a08 0%, transparent 70%);
+            }
+
+            .grain {
+                position: fixed;
+                inset: 0;
+                pointer-events: none;
+                z-index: 9999;
+                opacity: 0.06;
+                background-image: url("data:image/svg+xml,%3Csvg viewBox='0 0 256 256' xmlns='http://www.w3.org/2000/svg'%3E%3Cfilter id='n'%3E%3CfeTurbulence type='fractalNoise' baseFrequency='.85' numOctaves='4' stitchTiles='stitch'/%3E%3C/filter%3E%3Crect width='100%25' height='100%25' filter='url(%23n)'/%3E%3C/svg%3E");
+                background-repeat: repeat;
+                background-size: 180px;
+            }
+
+            .container {
+                position: relative;
+                z-index: 1;
+                max-width: 880px;
+                margin: 0 auto;
+                padding: 0 24px;
+            }
+
+            header {
+                padding: 48px 0 0;
+            }
+            .header-row {
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                flex-wrap: wrap;
+                gap: 16px;
+            }
+            .logo-group {
+                display: flex;
+                align-items: baseline;
+                gap: 14px;
+            }
+            .logo {
+                font-family: 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
+                font-size: clamp(2rem, 5vw, 2.8rem);
+                font-weight: 700;
+                letter-spacing: -0.02em;
+                color: var(--text);
+            }
+            .logo span {
+                color: var(--accent);
+            }
+            .version {
+                font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+                font-size: 0.75rem;
+                color: var(--text-dim);
+                background: var(--surface-2);
+                border: 1px solid var(--border);
+                padding: 3px 10px;
+                border-radius: 20px;
+                white-space: nowrap;
+            }
+            .header-right {
+                display: flex;
+                align-items: center;
+                gap: 12px;
+            }
+            .gh-link {
+                display: inline-flex;
+                align-items: center;
+                gap: 7px;
+                font-size: 0.85rem;
+                font-weight: 500;
+                font-family:
+                    system-ui,
+                    -apple-system,
+                    sans-serif;
+                color: var(--text-dim);
+                text-decoration: none;
+                padding: 7px 14px;
+                border: 1px solid var(--border);
+                border-radius: var(--radius);
+                transition: all 0.2s;
+                background: var(--surface);
+            }
+            .gh-link:hover {
+                color: var(--text);
+                border-color: var(--border-accent);
+                background: var(--surface-2);
+            }
+            .gh-link svg {
+                width: 18px;
+                height: 18px;
+                fill: currentColor;
+            }
+
+            .tagline-row {
+                margin-top: 24px;
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                gap: 24px;
+                flex-wrap: wrap;
+            }
+            .tagline {
+                font-size: 1.05rem;
+                color: var(--text-dim);
+                max-width: 480px;
+                line-height: 1.65;
+                flex: 1 1 auto;
+            }
+            .sr-only {
+                position: absolute;
+                width: 1px;
+                height: 1px;
+                padding: 0;
+                margin: -1px;
+                overflow: hidden;
+                clip: rect(0, 0, 0, 0);
+                white-space: nowrap;
+                border: 0;
+            }
+            .install-bar {
+                flex: 0 0 auto;
+                min-width: 320px;
+                display: flex;
+                align-items: stretch;
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: var(--radius);
+                overflow: hidden;
+                transition: border-color 0.2s;
+            }
+            .install-bar:hover {
+                border-color: var(--border-accent);
+            }
+            .install-cmd {
+                flex: 1;
+                font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+                font-size: 0.88rem;
+                color: var(--text);
+                padding: 14px 18px;
+                background: transparent;
+                border: none;
+                user-select: all;
+                cursor: text;
+                outline: none;
+            }
+            .install-cmd::selection {
+                background: var(--accent-glow);
+            }
+            .copy-btn {
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                width: 52px;
+                background: var(--surface-2);
+                border: none;
+                border-left: 1px solid var(--border);
+                color: var(--text-dim);
+                cursor: pointer;
+                transition: all 0.2s;
+                position: relative;
+            }
+            .copy-btn:hover {
+                color: var(--text);
+                background: var(--surface-3);
+            }
+            .copy-btn svg {
+                width: 18px;
+                height: 18px;
+            }
+            .copy-btn .check {
+                display: none;
+                color: var(--green);
+            }
+            .copy-btn.copied .clipboard {
+                display: none;
+            }
+            .copy-btn.copied .check {
+                display: block;
+            }
+
+            .detector {
+                margin-top: 52px;
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: calc(var(--radius) + 4px);
+                overflow: hidden;
+            }
+            .detector-header {
+                padding: 20px 24px;
+                border-bottom: 1px solid var(--border);
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+            }
+            .detector-title {
+                font-size: 0.8rem;
+                font-weight: 600;
+                text-transform: uppercase;
+                letter-spacing: 0.08em;
+                color: var(--text-muted);
+                font-family:
+                    system-ui,
+                    -apple-system,
+                    sans-serif;
+            }
+
+            .tabs {
+                margin: 0;
+                display: flex;
+                gap: 4px;
+                padding: 8px 12px 0;
+                background: var(--surface);
+                overflow-x: scroll;
+            }
+            .tab-btn {
+                font-family:
+                    system-ui,
+                    -apple-system,
+                    sans-serif;
+                font-size: 0.78rem;
+                font-weight: 500;
+                color: var(--text-dim);
+                background: transparent;
+                border: none;
+                border-radius: 6px 6px 0 0;
+                padding: 10px 16px;
+                cursor: pointer;
+                transition: all 0.15s;
+                white-space: nowrap;
+            }
+            .tab-btn:hover {
+                color: var(--text);
+                background: var(--surface-2);
+            }
+            .tab-btn.active {
+                color: var(--accent);
+                background: var(--bg);
+            }
+            .tab-panel {
+                display: none;
+                padding: 24px;
+                background: var(--bg);
+            }
+            .tab-panel.active {
+                display: block;
+                animation: fadeUp 0.3s ease;
+            }
+            @keyframes fadeUp {
+                from {
+                    opacity: 0;
+                    transform: translateY(6px);
+                }
+                to {
+                    opacity: 1;
+                    transform: translateY(0);
+                }
+            }
+            .challenge-wrap {
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: var(--radius);
+                overflow: hidden;
+            }
+            .challenge-wrap > form,
+            .challenge-wrap > div {
+                max-width: 100%;
+            }
+
+            .section {
+                margin-top: 56px;
+            }
+            .section-title {
+                font-family: 'Palatino Linotype', Palatino, 'Book Antiqua', Georgia, serif;
+                font-size: 1.5rem;
+                color: var(--text);
+                margin-bottom: 8px;
+            }
+            .section-desc {
+                color: var(--text-dim);
+                font-size: 0.92rem;
+                margin-bottom: 24px;
+                max-width: 600px;
+            }
+            .rules-grid {
+                display: grid;
+                grid-template-columns: repeat(2, 1fr);
+                gap: 12px;
+            }
+            .rule-card {
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: var(--radius);
+                padding: 20px;
+                transition: border-color 0.2s;
+            }
+            .rule-card:hover {
+                border-color: var(--border-accent);
+            }
+            .rule-icon {
+                width: 32px;
+                height: 32px;
+                border-radius: 8px;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+                font-size: 0.85rem;
+                margin-bottom: 12px;
+                font-family:
+                    system-ui,
+                    -apple-system,
+                    sans-serif;
+            }
+            .rule-card h3 {
+                font-size: 0.88rem;
+                font-weight: 700;
+                margin-bottom: 6px;
+                color: var(--text);
+                font-family:
+                    system-ui,
+                    -apple-system,
+                    sans-serif;
+            }
+            .rule-card p {
+                font-size: 0.8rem;
+                color: var(--text-dim);
+                line-height: 1.6;
+            }
+
+            .code-block {
+                margin-top: 56px;
+                background: var(--surface);
+                border: 1px solid var(--border);
+                border-radius: var(--radius);
+                overflow: hidden;
+            }
+            .code-header {
+                padding: 12px 18px;
+                border-bottom: 1px solid var(--border);
+                display: flex;
+                align-items: center;
+                gap: 8px;
+            }
+            .code-dot {
+                width: 10px;
+                height: 10px;
+                border-radius: 50%;
+                background: var(--surface-3);
+            }
+            .code-header span {
+                font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+                font-size: 0.72rem;
+                color: var(--text-muted);
+                margin-left: 8px;
+            }
+            .code-body {
+                padding: 20px 24px;
+                font-family: 'SF Mono', Menlo, Consolas, 'Liberation Mono', monospace;
+                font-size: 0.82rem;
+                line-height: 1.9;
+                color: var(--text-dim);
+                overflow-x: auto;
+            }
+            .code-body .kw {
+                color: var(--accent);
+            }
+            .code-body .fn {
+                color: var(--green);
+            }
+            .code-body .str {
+                color: var(--amber);
+            }
+            .code-body .cm {
+                color: var(--text-muted);
+                font-style: italic;
+            }
+            .code-body .cls {
+                color: #5c8fc9;
+            }
+
+            footer {
+                margin-top: 80px;
+                padding: 28px 0;
+                border-top: 1px solid var(--border);
+                display: flex;
+                align-items: center;
+                justify-content: space-between;
+                flex-wrap: wrap;
+                gap: 12px;
+                font-size: 0.78rem;
+                color: var(--text-muted);
+                font-family:
+                    system-ui,
+                    -apple-system,
+                    sans-serif;
+            }
+            footer a {
+                color: var(--text-dim);
+                text-decoration: underline;
+                transition: color 0.2s;
+            }
+            footer a:hover {
+                color: var(--text);
+            }
+
+            @media (max-width: 600px) {
+                header {
+                    padding-top: 32px;
+                }
+                .tagline-row {
+                    flex-direction: column;
+                    align-items: flex-start;
+                }
+                .ua-input {
+                    font-size: 0.85rem;
+                    padding: 14px 16px;
+                }
+                .rules-grid {
+                    grid-template-columns: repeat(2, 1fr);
+                }
+                footer {
+                    flex-direction: column;
+                    align-items: flex-start;
+                }
+            }
+            @media (max-width: 400px) {
+                .logo {
+                    font-size: 1.5rem;
+                }
+                .version {
+                    font-size: 0.65rem;
+                    padding: 2px 7px;
+                }
+                .install-bar {
+                    min-width: 0;
+                    width: 100%;
+                }
+                .rules-grid {
+                    grid-template-columns: 1fr;
+                }
+            }
+        </style>
+    </head>
+    <body>
+        <div class="ambient"></div>
+        <div class="grain"></div>
+
+        <div class="container">
+            <header>
+                <div class="header-row">
+                    <div class="logo-group">
+                        <h1 class="logo">flask<span>-</span>Vouch</h1>
+                        <span class="version" id="version">v1.0.0</span>
+                    </div>
+                    <div class="header-right">
+                        <a
+                            class="gh-link"
+                            href="https://github.com/tn3w/flask-Vouch"
+                            target="_blank"
+                            rel="noopener"
+                        >
+                            <svg viewBox="0 0 16 16">
+                                <path
+                                    d="M8 0C3.58 0 0 3.58 0 8c0 3.54 2.29 6.53 5.47 7.59.4.07.55-.17.55-.38 0-.19-.01-.82-.01-1.49-2.01.37-2.53-.49-2.69-.94-.09-.23-.48-.94-.82-1.13-.28-.15-.68-.52-.01-.53.63-.01 1.08.58 1.23.82.72 1.21 1.87.87 2.33.66.07-.52.28-.87.51-1.07-1.78-.2-3.64-.89-3.64-3.95 0-.87.31-1.59.82-2.15-.08-.2-.36-1.02.08-2.12 0 0 .67-.21 2.2.82.64-.18 1.32-.27 2-.27.68 0 1.36.09 2 .27 1.53-1.04 2.2-.82 2.2-.82.44 1.1.16 1.92.08 2.12.51.56.82 1.27.82 2.15 0 3.07-1.87 3.75-3.65 3.95.29.25.54.73.54 1.48 0 1.07-.01 1.93-.01 2.2 0 .21.15.46.55.38A8.013 8.013 0 0016 8c0-4.42-3.58-8-8-8z"
+                                />
+                            </svg>
+                            GitHub
+                        </a>
+                    </div>
+                </div>
+            </header>
+
+            <main>
+                <div class="tagline-row">
+                    <p class="tagline">
+                        Bot challenge middleware for Flask. Issues CAPTCHA challenges, grants signed
+                        JWT cookies, supports Redis — drop-in protection.
+                    </p>
+                    <div class="install-bar" id="installBar">
+                        <label for="installCmd" class="sr-only">Install command</label>
+                        <input
+                            class="install-cmd"
+                            value="pip install flask-vouch"
+                            readonly
+                            id="installCmd"
+                        />
+                        <button class="copy-btn" id="copyBtn" aria-label="Copy install command">
+                            <svg
+                                class="clipboard"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                            >
+                                <rect x="9" y="9" width="13" height="13" rx="2" />
+                                <path d="M5 15H4a2 2 0 01-2-2V4a2 2 0 012-2h9a2 2 0 012 2v1" />
+                            </svg>
+                            <svg
+                                class="check"
+                                viewBox="0 0 24 24"
+                                fill="none"
+                                stroke="currentColor"
+                                stroke-width="2.5"
+                                stroke-linecap="round"
+                                stroke-linejoin="round"
+                            >
+                                <polyline points="20 6 9 17 4 12" />
+                            </svg>
+                        </button>
+                    </div>
+                </div>
+
+                <!-- CHALLENGE_PREVIEWS_PLACEHOLDER -->
+
+                <div class="section">
+                    <h2 class="section-title">Challenge types</h2>
+                    <p class="section-desc">
+                        Eight built-in challenges. Swap handlers at construction time — no template
+                        changes required.
+                    </p>
+                    <div class="rules-grid">
+                        <div class="rule-card">
+                            <div
+                                class="rule-icon"
+                                style="background: var(--accent-glow); color: var(--accent)"
+                            >
+                                PoW
+                            </div>
+                            <h3>SHA-256 / Balloon</h3>
+                            <p>
+                                Client-side proof-of-work. Configurable difficulty — cheap for
+                                browsers, expensive for bots at scale.
+                            </p>
+                        </div>
+                        <div class="rule-card">
+                            <div
+                                class="rule-icon"
+                                style="background: var(--amber-dim); color: var(--amber)"
+                            >
+                                IMG
+                            </div>
+                            <h3>Image / Grid CAPTCHA</h3>
+                            <p>
+                                Distorted character images and click-grid challenges that defeat
+                                OCR-based solvers.
+                            </p>
+                        </div>
+                        <div class="rule-card">
+                            <div
+                                class="rule-icon"
+                                style="background: var(--green-dim); color: var(--green)"
+                            >
+                                UX
+                            </div>
+                            <h3>Rotation / Sliding / Circle</h3>
+                            <p>
+                                Drag-based interaction challenges. High pass rate for humans, hard
+                                to automate reliably.
+                            </p>
+                        </div>
+                        <div class="rule-card">
+                            <div class="rule-icon" style="background: #5c8fc922; color: #5c8fc9">
+                                3P
+                            </div>
+                            <h3>Third-party CAPTCHAs</h3>
+                            <p>
+                                Altcha, Arkose, CaptchaFox, GeeTest, MTCaptcha — pass your
+                                credentials, Vouch handles the verification flow.
+                            </p>
+                        </div>
+                        <div class="rule-card">
+                            <div
+                                class="rule-icon"
+                                style="background: var(--red-dim); color: var(--red)"
+                            >
+                                🎧
+                            </div>
+                            <h3>Audio CAPTCHA</h3>
+                            <p>
+                                Spoken digit sequences for accessibility. Layered noise makes
+                                automated transcription difficult.
+                            </p>
+                        </div>
+                        <div class="rule-card">
+                            <div
+                                class="rule-icon"
+                                style="background: #5c554520; color: var(--text-dim)"
+                            >
+                                Nav
+                            </div>
+                            <h3>Navigator Attestation</h3>
+                            <p>
+                                Checks browser API surface — <em>navigator</em>, <em>screen</em>,
+                                plugins — to detect headless environments without a visible
+                                challenge.
+                            </p>
+                        </div>
+                        <div class="rule-card" style="grid-column: span 2">
+                            <div
+                                class="rule-icon"
+                                style="background: var(--accent-glow); color: var(--accent)"
+                            >
+                                IP
+                            </div>
+                            <h3>IP Blocklist</h3>
+                            <p>
+                                Built-in blocklist with CIDR support. Combines with policy rules to
+                                hard-deny known bad actors before any challenge is issued.
+                            </p>
+                        </div>
+                    </div>
+                </div>
+
+                <div class="code-block">
+                    <div class="code-header">
+                        <div class="code-dot"></div>
+                        <div class="code-dot"></div>
+                        <div class="code-dot"></div>
+                        <span>app.py</span>
+                    </div>
+                    <div class="code-body">
+                        <span class="kw">from</span> flask <span class="kw">import</span>
+                        <span class="cls">Flask</span>
+                        <br />
+                        <span class="kw">from</span> flask_vouch <span class="kw">import</span>
+                        <span class="cls">Vouch</span>
+                        <br /><br />
+                        app = <span class="cls">Flask</span>(<span class="str">__name__</span>)
+                        <br />
+                        vouch = <span class="cls">Vouch</span>(app, secret=<span class="str"
+                            >"change-me"</span
+                        >) &nbsp;<span class="cm"># wraps every route</span> <br /><br />
+                        <span class="cm"># Application factory pattern</span>
+                        <br />
+                        vouch = <span class="cls">Vouch</span>(secret=<span class="str"
+                            >"change-me"</span
+                        >)
+                        <br />
+                        vouch.<span class="fn">init_app</span>(app) <br /><br />
+                        <span class="cm"># Route decorators</span>
+                        <br />
+                        @vouch.<span class="fn">exempt</span> &nbsp;<span class="cm"
+                            ># skip check entirely</span
+                        >
+                        <br />
+                        @vouch.<span class="fn">protect</span> &nbsp;<span class="cm"
+                            ># always challenge</span
+                        >
+                        <br />
+                        @vouch.<span class="fn">block</span> &nbsp;&nbsp;<span class="cm"
+                            ># deny non-vouched, no challenge</span
+                        >
+                        <br /><br />
+                        <span class="cm"># Access claims in view</span>
+                        <br />
+                        <span class="kw">import</span> flask
+                        <br />
+                        claims = flask.g.vouch &nbsp;<span class="cm"
+                            ># is_crawler, crawler_name, score …</span
+                        >
+                    </div>
+                </div>
+
+                <footer>
+                    <span
+                        >Apache-2.0 &middot; Made by
+                        <a href="https://github.com/tn3w">TN3W</a></span
+                    >
+                    <a href="https://github.com/tn3w/flask-Vouch">github.com/tn3w/flask-Vouch</a>
+                </footer>
+            </main>
+        </div>
+
+        <script>
+            const copyBtn = document.getElementById('copyBtn');
+            const installCmd = document.getElementById('installCmd');
+            copyBtn.addEventListener('click', () => {
+                navigator.clipboard.writeText(installCmd.value).then(() => {
+                    copyBtn.classList.add('copied');
+                    setTimeout(() => copyBtn.classList.remove('copied'), 1800);
+                });
+            });
+        </script>
+    </body>
+</html>
