@@ -151,7 +151,7 @@ def build_challenge_section(
                         document.querySelectorAll('.tab-btn[data-tab="' + slug + '"]').forEach(b => b.classList.add('active'));
                     }}
                     showTab('{first_slug}');
-                </script>""".replace("f.submit();", "")
+                </script>""".replace("f.submit();", "").replace("POST", "GET")
 
 
 def main():
