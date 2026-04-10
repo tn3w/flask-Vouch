@@ -15,9 +15,9 @@ from flask_vouch.engine import (
     _blocklist_match,
     _challenge_headers,
     _safe_redirect,
-    crawler_name as _crawler_name,
-    is_crawler as _is_crawler,
 )
+from flask_vouch.engine import crawler_name as _crawler_name
+from flask_vouch.engine import is_crawler as _is_crawler
 
 _PREFIX = "VOUCH_"
 

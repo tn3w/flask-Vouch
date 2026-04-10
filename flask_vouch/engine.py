@@ -34,9 +34,7 @@ _match_browser_sign = _regex.compile(
 ).search
 
 _match_bare_compat = _regex.compile(
-    r"(?i)\(compatible;"
-    r"(?![^)]*(?:windows|mac|linux|msie|konqueror))"
-    r"[^)]*\)"
+    r"(?i)\(compatible;" r"(?![^)]*(?:windows|mac|linux|msie|konqueror))" r"[^)]*\)"
 ).search
 
 _match_url = _regex.compile(r"(?:^|[+;]|\s-\s)https?://[^\s);,]+").search
@@ -90,6 +88,7 @@ def crawler_name(user_agent: str) -> str | None:
         return parts[0].split("/", 1)[0] if parts else None
     names = _find_name(_strip_browser_bits(" ", _strip_comments(" ", user_agent)))
     return names[-1] if names else None
+
 
 from flask_vouch.challenges import ChallengeBase, ChallengeHandler, SHA256Balloon
 

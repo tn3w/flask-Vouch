@@ -85,17 +85,17 @@ vouch.init_app(app)
 
 Pass as kwargs or via `app.config` with the `VOUCH_` prefix:
 
-| Parameter           | Default              | Description                             |
-| ------------------- | -------------------- | --------------------------------------- |
-| `secret`            | `SECRET_KEY`         | HMAC/JWT signing key                    |
-| `policy`            | default rules        | `Policy` instance                       |
-| `exclude`           | `[]`                 | Path regexes to skip entirely           |
-| `json_mode`         | `False`              | Return JSON challenge instead of HTML   |
-| `cookie_name`       | `_tollbooth`         | Access cookie name                      |
-| `cookie_ttl`        | `604800`             | Cookie lifetime in seconds (7 days)     |
-| `verify_path`       | `/.tollbooth/verify` | Challenge verification endpoint         |
-| `challenge_handler` | `SHA256Balloon`      | Challenge implementation                |
-| `blocklist`         | `None`               | `IPBlocklist` instance or list of them  |
+| Parameter           | Default              | Description                            |
+| ------------------- | -------------------- | -------------------------------------- |
+| `secret`            | `SECRET_KEY`         | HMAC/JWT signing key                   |
+| `policy`            | default rules        | `Policy` instance                      |
+| `exclude`           | `[]`                 | Path regexes to skip entirely          |
+| `json_mode`         | `False`              | Return JSON challenge instead of HTML  |
+| `cookie_name`       | `_tollbooth`         | Access cookie name                     |
+| `cookie_ttl`        | `604800`             | Cookie lifetime in seconds (7 days)    |
+| `verify_path`       | `/.tollbooth/verify` | Challenge verification endpoint        |
+| `challenge_handler` | `SHA256Balloon`      | Challenge implementation               |
+| `blocklist`         | `None`               | `IPBlocklist` instance or list of them |
 
 ```python
 app.config["VOUCH_COOKIE_NAME"] = "_v"
@@ -104,11 +104,11 @@ app.config["VOUCH_COOKIE_TTL"] = 3600
 
 ## Route decorators
 
-| Decorator          | Behavior                                               |
-| ------------------ | ------------------------------------------------------ |
-| `@vouch.exempt`    | Skip challenge entirely for this route                 |
-| `@vouch.protect`   | Always run challenge check (overrides global allow)    |
-| `@vouch.challenge` | Always issue a challenge regardless of policy          |
+| Decorator          | Behavior                                                  |
+| ------------------ | --------------------------------------------------------- |
+| `@vouch.exempt`    | Skip challenge entirely for this route                    |
+| `@vouch.protect`   | Always run challenge check (overrides global allow)       |
+| `@vouch.challenge` | Always issue a challenge regardless of policy             |
 | `@vouch.block`     | Deny detected crawlers outright; challenge or pass others |
 
 ## Custom rules
@@ -137,19 +137,19 @@ vouch = Vouch(app, secret="s", policy=load_policy())
 
 Rule fields:
 
-| Field              | Type           | Description                              |
-| ------------------ | -------------- | ---------------------------------------- |
-| `name`             | `str`          | Identifier                               |
-| `action`           | `str`          | `allow` · `deny` · `challenge` · `weigh` |
-| `user_agent`       | `str` (regex)  | Match on User-Agent header               |
-| `path`             | `str` (regex)  | Match on request path                    |
-| `headers`          | `dict`         | Match on arbitrary headers (regex values)|
-| `remote_addresses` | `list[str]`    | CIDR ranges to match                     |
-| `difficulty`       | `int`          | Challenge difficulty (default: policy)   |
-| `weight`           | `int`          | Score added when `action=weigh`          |
-| `blocklist`        | `bool`         | Match IPs in the loaded blocklist        |
-| `bogon_ip`         | `bool`         | Match non-global / bogon IPs             |
-| `crawler`          | `bool`         | Match detected crawler user agents       |
+| Field              | Type          | Description                               |
+| ------------------ | ------------- | ----------------------------------------- |
+| `name`             | `str`         | Identifier                                |
+| `action`           | `str`         | `allow` · `deny` · `challenge` · `weigh`  |
+| `user_agent`       | `str` (regex) | Match on User-Agent header                |
+| `path`             | `str` (regex) | Match on request path                     |
+| `headers`          | `dict`        | Match on arbitrary headers (regex values) |
+| `remote_addresses` | `list[str]`   | CIDR ranges to match                      |
+| `difficulty`       | `int`         | Challenge difficulty (default: policy)    |
+| `weight`           | `int`         | Score added when `action=weigh`           |
+| `blocklist`        | `bool`        | Match IPs in the loaded blocklist         |
+| `bogon_ip`         | `bool`        | Match non-global / bogon IPs              |
+| `crawler`          | `bool`        | Match detected crawler user agents        |
 
 ## Challenge types
 
@@ -240,6 +240,14 @@ def submit():
     if not tpc.is_turnstile_valid():
         abort(403)
     ...
+```
+
+## Formatting
+
+```bash
+pip install black isort
+isort . && black .
+npx prtfm
 ```
 
 ## License
