@@ -32,8 +32,9 @@ pip install flask-Vouch
 Optional extras:
 
 ```bash
-pip install flask-Vouch[image]   # image-based captchas (Pillow)
-pip install flask-Vouch[audio]   # audio captcha (numpy, scipy)
+pip install flask-Vouch[image]      # image-based captchas (Pillow)
+pip install flask-Vouch[rotation]   # RotationCaptcha (Pillow, numpy)
+pip install flask-Vouch[audio]      # audio captcha (numpy, scipy)
 ```
 
 ## How it works
@@ -155,15 +156,15 @@ Rule fields:
 
 ```python
 from flask_vouch import (
-    SHA256Balloon,              # default — proof of work (balloon hashing)
+    SHA256Balloon,              # default, proof of work    (balloon hashing)
     SHA256,                     # lightweight SHA-256 PoW
     CharacterCaptcha,           # text CAPTCHA
-    ImageCaptcha,               # image CAPTCHA          (requires Pillow)
-    RotationCaptcha,            # rotation CAPTCHA        (requires Pillow)
-    SlidingCaptcha,             # sliding puzzle          (requires Pillow)
-    CircleCaptcha,              # circle select CAPTCHA   (requires Pillow)
-    ImageGridCaptcha,           # image grid CAPTCHA      (requires Pillow)
-    AudioCaptcha,               # audio CAPTCHA           (requires numpy, scipy)
+    ImageCaptcha,               # image CAPTCHA             (requires Pillow)
+    RotationCaptcha,            # rotation CAPTCHA          (requires Pillow, numpy)
+    SlidingCaptcha,             # sliding puzzle            (requires Pillow)
+    CircleCaptcha,              # circle select CAPTCHA     (requires Pillow)
+    ImageGridCaptcha,           # image grid CAPTCHA        (requires Pillow)
+    AudioCaptcha,               # audio CAPTCHA             (requires numpy, scipy)
     NavigatorAttestation,       # browser signal attestation
     ThirdPartyCaptchaChallenge, # embed external CAPTCHAs
 )

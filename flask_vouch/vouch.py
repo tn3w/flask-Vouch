@@ -331,6 +331,7 @@ class Vouch:
             flask.g.vouch = req.get("_claims")
             return view(*args, **kwargs)
 
+        wrapper._vouch_exempt = True  # type: ignore[attr-defined]
         return wrapper
 
     def challenge(self, view):
@@ -359,11 +360,11 @@ class Vouch:
             flask.g.vouch = req.get("_claims")
             return view(*args, **kwargs)
 
+        wrapper._vouch_exempt = True  # type: ignore[attr-defined]
         return wrapper
 
     def block(self, view):
         """Decorator: deny anything the policy would challenge or deny; pass allows."""
-        view._vouch_block = True
 
         @wraps(view)
         def wrapper(*args, **kwargs):
@@ -379,6 +380,7 @@ class Vouch:
             flask.g.vouch = None
             return view(*args, **kwargs)
 
+        wrapper._vouch_exempt = True  # type: ignore[attr-defined]
         return wrapper
 
     def mount_verify(self, app: flask.Flask) -> None:

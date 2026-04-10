@@ -694,11 +694,11 @@ class Engine:
     _BRANDING = (
         '<div class="branding">'
         "Protected by "
-        '<a href="https://github.com/libcaptcha/'
-        'tollbooth" target="_blank">tollbooth</a>'
+        '<a href="https://github.com/tn3w/flask-'
+        'Vouch" target="_blank">flask-Vouch</a>'
         " · "
-        '<a href="https://github.com/libcaptcha" '
-        'target="_blank">libcaptcha</a>'
+        '<a href="https://github.com/tn3w" '
+        'target="_blank">tn3w</a>'
         "</div>"
     )
 
