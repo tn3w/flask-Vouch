@@ -24,7 +24,7 @@ def _ensure_audio_deps():
         return np, write_wav
     except ImportError as e:
         raise ImportError(
-            "numpy and scipy are required: " "pip install flask-bouncer[audio]"
+            "numpy and scipy are required: " "pip install flask-vouch[audio]"
         ) from e
 
 

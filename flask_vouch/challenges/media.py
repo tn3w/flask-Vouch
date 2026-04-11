@@ -10,7 +10,7 @@ def distort_image(
     try:
         from PIL import Image, ImageDraw, ImageFilter
     except ImportError as e:
-        raise ImportError("Pillow is required: pip install flask-bouncer[image]") from e
+        raise ImportError("Pillow is required: pip install flask-vouch[image]") from e
 
     hardness = max(1, min(hardness, 5))
 

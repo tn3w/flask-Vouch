@@ -38,6 +38,9 @@ FAKE_REQUEST = {
     "form": {},
 }
 
+# Element IDs that appear in multiple challenge templates and must be scoped.
+SCOPE_IDS = ["status", "bar", "rounds"]
+
 HANDLERS = [
     ("SHA-256 Balloon", "sha256-balloon", SHA256Balloon(), "sha256_balloon"),
     ("SHA-256 PoW", "sha256", SHA256(), "sha256"),
@@ -111,6 +114,61 @@ def extract_body_and_scripts(full_html: str) -> tuple[str, str]:
     return body, styles
 
 
+def remove_reload_btn(body: str) -> str:
+    """Strip reload/new-challenge buttons from preview panels."""
+    body = re.sub(
+        r'<(?:button|a)[^>]+class=["\'][^"\']*reload-btn[^"\']*["\'][^>]*>.*?</(?:button|a)>',
+        "",
+        body,
+        flags=re.DOTALL | re.IGNORECASE,
+    )
+    return body
+
+
+def scope_panel(slug: str, body: str) -> str:
+    """Prefix shared element IDs with the panel slug to avoid cross-panel conflicts."""
+    for eid in SCOPE_IDS:
+        body = body.replace(f'id="{eid}"', f'id="{slug}-{eid}"')
+        body = body.replace(
+            f"getElementById('{eid}')", f"getElementById('{slug}-{eid}')"
+        )
+        body = body.replace(
+            f'getElementById("{eid}")', f'getElementById("{slug}-{eid}")'
+        )
+    return body
+
+
+def make_pow_restartable(slug: str, body: str) -> str:
+    """Convert a PoW auto-running IIFE into a lazily-called, restartable init function.
+
+    The converted function is stored as ``window.__vouchInits[slug]`` and called by
+    ``showTab`` each time the panel becomes active, so workers restart on every visit.
+    """
+    if "var workerSrc" not in body:
+        return body  # not a PoW challenge
+
+    # Replace IIFE opening with a named init function stored globally.
+    body = re.sub(
+        r"\(function\s*\(\)\s*\{",
+        (
+            "window.__vouchInits = window.__vouchInits || {};\n"
+            f"                window.__vouchInits['{slug}'] = function () {{"
+        ),
+        body,
+        count=1,
+    )
+    # Remove the auto-invocation (the LAST })(); is the outer IIFE close).
+    # count=1 would match the inner w.onmessage = (function(){...})(); instead.
+    last = list(re.finditer(r"\}\)\(\);", body))[-1]
+    body = body[: last.start()] + "};" + body[last.end() :]
+    # Expose the workers array globally so showTab can terminate them on tab switch.
+    body = body.replace(
+        "var workers = [];",
+        "var workers = []; window.__vouchCurrentWorkers = workers;",
+    )
+    return body
+
+
 def build_challenge_section(
     rendered_challenges: list[tuple[str, str, str, str]],
 ) -> str:
@@ -123,6 +181,9 @@ def build_challenge_section(
     panels = ""
     for i, (label, slug, body, styles) in enumerate(rendered_challenges):
         active = " active" if i == 0 else ""
+        body = remove_reload_btn(body)
+        body = scope_panel(slug, body)
+        body = make_pow_restartable(slug, body)
         panels += f"""
 <div class="tab-panel{active}" id="panel-{slug}">
     <style>{styles}</style>
@@ -144,11 +205,22 @@ def build_challenge_section(
                 </div>
                 <script>
                     function showTab(slug) {{
+                        // Terminate any running PoW workers from the previous tab.
+                        if (window.__vouchCurrentWorkers && window.__vouchCurrentWorkers.length) {{
+                            window.__vouchCurrentWorkers.forEach(function(w) {{
+                                try {{ w.terminate(); }} catch(e) {{}}
+                            }});
+                            window.__vouchCurrentWorkers = [];
+                        }}
                         document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
                         document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
                         const panel = document.getElementById('panel-' + slug);
                         if (panel) panel.classList.add('active');
                         document.querySelectorAll('.tab-btn[data-tab="' + slug + '"]').forEach(b => b.classList.add('active'));
+                        // Restart the challenge if this panel has an init function (PoW panels).
+                        if (window.__vouchInits && window.__vouchInits[slug]) {{
+                            window.__vouchInits[slug]();
+                        }}
                     }}
                     showTab('{first_slug}');
                 </script>""".replace("f.submit();", "").replace("POST", "GET")

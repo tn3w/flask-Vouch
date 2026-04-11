@@ -264,7 +264,7 @@ class SlidingCaptcha(ChallengeHandler):
         except ImportError as e:
             raise ImportError(
                 "Pillow is required for SlidingCaptcha: "
-                "pip install flask-bouncer[image]"
+                "pip install flask-vouch[image]"
             ) from e
 
         sol_x, sol_y = map(int, solution.split(","))

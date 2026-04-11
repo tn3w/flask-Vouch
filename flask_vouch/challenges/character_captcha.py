@@ -186,7 +186,7 @@ class CharacterCaptcha(ChallengeHandler):
         except ImportError as e:
             raise ImportError(
                 "Pillow is required for CharacterCaptcha: "
-                "pip install flask-bouncer[image]"
+                "pip install flask-vouch[image]"
             ) from e
 
         fonts = _find_fonts()

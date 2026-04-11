@@ -319,7 +319,7 @@ def _render_reference(mesh, angle_deg, size=300):
     except ImportError as e:
         raise ImportError(
             "Pillow and numpy are required for "
-            "RotationCaptcha: pip install flask-bouncer[image]"
+            "RotationCaptcha: pip install flask-vouch[image]"
         ) from e
 
     fov, cam_dist, cam_elev = 45, 3.2, 0.35
