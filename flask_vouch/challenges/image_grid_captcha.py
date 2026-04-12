@@ -9,14 +9,14 @@ from threading import Lock
 
 from .base import DIFFICULTY_OFFSETS, ChallengeBase, ChallengeHandler, ChallengeType
 from .datasets import get_default_store
-from .media import distort_image
+from .media import distort_images
 
 _TOKEN_TTL = 1800
 _RENDER_CACHE_SIZE = 64
 
 
 def _img_data_url(data: bytes) -> str:
-    return f"data:image/png;base64,{base64.b64encode(data).decode()}"
+    return f"data:image/jpeg;base64,{base64.b64encode(data).decode()}"
 
 
 @dataclass
@@ -104,14 +104,8 @@ class ImageGridCaptcha(ChallengeHandler):
         hardness = max(1, min(difficulty, 5))
 
         grid = [
-            _img_data_url(
-                distort_image(
-                    img,
-                    size=100,
-                    hardness=hardness,
-                ),
-            )
-            for img in images
+            _img_data_url(d)
+            for d in distort_images(images, size=100, hardness=hardness)
         ]
 
         iv = secrets.token_hex(16)

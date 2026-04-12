@@ -1,6 +1,6 @@
 [project]
 name = "flask-Vouch"
-version = "1.0.2"
+version = "1.0.3"
 description = "Bot-challenge Python middleware issuing brief challenges, granting solvers signed access cookies."
 readme = "README.md"
 authors = [
@@ -38,8 +38,7 @@ Repository = "https://github.com/tn3w/flask-Vouch.git"
 Issues = "https://github.com/tn3w/flask-Vouch/issues"
 
 [project.optional-dependencies]
-image = ["Pillow>=10.0"]
-rotation = ["Pillow>=10.0", "numpy>=1.24"]
+image = ["Pillow>=10.0", "numpy>=1.24"]
 audio = ["numpy>=1.24", "scipy>=1.11"]
 
 [build-system]
