@@ -38,7 +38,7 @@ pip install flask-Vouch[audio]      # audio captcha (numpy, scipy)
 
 ## How it works
 
-1. Every request without a valid signed cookie is intercepted.
+1. Every suspicious unauthenticated request matching the configured rules is redirected to a challenge page.
 2. A proof-of-work challenge (SHA-256 Balloon by default) is issued.
 3. The browser solves it in JavaScript and POSTs to `/.tollbooth/verify`.
 4. A valid solution sets a signed JWT cookie — subsequent requests pass through.
