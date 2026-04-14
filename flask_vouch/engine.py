@@ -327,7 +327,7 @@ class Rule:
             return False
 
         if any(
-            not p.search(request["headers"].get(k, ""))
+            k not in request["headers"] or not p.search(request["headers"][k])
             for k, p in self._header_res.items()
         ):
             return False

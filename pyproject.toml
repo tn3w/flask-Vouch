@@ -1,6 +1,6 @@
 [project]
 name = "flask-Vouch"
-version = "1.0.3"
+version = "1.0.4"
 description = "Bot-challenge Python middleware issuing brief challenges, granting solvers signed access cookies."
 readme = "README.md"
 authors = [
