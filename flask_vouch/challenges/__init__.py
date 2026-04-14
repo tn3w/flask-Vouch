@@ -2,6 +2,7 @@ from .audio_captcha import AudioCaptcha
 from .base import DIFFICULTY_OFFSETS, ChallengeBase, ChallengeHandler, ChallengeType
 from .character_captcha import CharacterCaptcha
 from .circle_captcha import CircleCaptcha
+from .cup_captcha import CupCaptcha
 from .image_captcha import ImageCaptcha
 from .image_grid_captcha import ImageGridCaptcha
 from .navigator_attestation import NavigatorAttestation, validate_signals
@@ -27,5 +28,6 @@ __all__ = [
     "SHA256",
     "SlidingCaptcha",
     "ThirdPartyCaptchaChallenge",
+    "CupCaptcha",
     "validate_signals",
 ]

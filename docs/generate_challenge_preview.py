@@ -13,6 +13,7 @@ from flask_vouch.challenges import (
     ChallengeType,
     CharacterCaptcha,
     CircleCaptcha,
+    CupCaptcha,
     ImageCaptcha,
     ImageGridCaptcha,
     NavigatorAttestation,
@@ -47,6 +48,7 @@ HANDLERS = [
     ("Character CAPTCHA", "character-captcha", CharacterCaptcha(), "character_captcha"),
     ("Image CAPTCHA", "image-captcha", ImageCaptcha(), "image_captcha"),
     ("Rotation CAPTCHA", "rotation-captcha", RotationCaptcha(), "rotation_captcha"),
+    ("Cup CAPTCHA", "cup-captcha", CupCaptcha(), "cup_captcha"),
     ("Sliding CAPTCHA", "sliding-captcha", SlidingCaptcha(), "sliding_captcha"),
     ("Circle CAPTCHA", "circle-captcha", CircleCaptcha(), "circle_captcha"),
     (

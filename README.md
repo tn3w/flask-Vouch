@@ -160,6 +160,7 @@ from flask_vouch import (
     CharacterCaptcha,           # text CAPTCHA
     ImageCaptcha,               # image CAPTCHA             (requires [image])
     RotationCaptcha,            # rotation CAPTCHA          (requires [image])
+    CupCaptcha,                 # cup fill CAPTCHA          (requires [image])
     SlidingCaptcha,             # sliding puzzle            (requires [image])
     CircleCaptcha,              # circle select CAPTCHA     (requires [image])
     ImageGridCaptcha,           # image grid CAPTCHA        (requires [image])
