@@ -1,16 +1,13 @@
 """Additional tests to improve coverage of uncovered lines."""
 
-import hashlib
-import hmac
 import tempfile
 import time
 from pathlib import Path
 from unittest.mock import patch
 
 import flask
-import pytest
 
-from flask_vouch import Engine, Policy, Rule, Vouch, jwt_decode, jwt_encode
+from flask_vouch import Engine, Policy, Rule, Vouch
 from flask_vouch.blocklist import (
     IPBlocklist,
     _cache_path_for,
@@ -22,24 +19,25 @@ from flask_vouch.blocklist import (
 )
 from flask_vouch.challenges.base import (
     ChallengeBase,
-    ChallengeHandler,
     ChallengeType,
     count_leading_zero_bits,
 )
 from flask_vouch.challenges.sha256 import SHA256
 from flask_vouch.engine import (
-    CHALLENGE_TTL,
     COOKIE_NAME,
     Challenge,
     RateLimiter,
     Store,
     TokenTracker,
-    _b64url_decode,
     _b64url_encode,
-    _is_bogon_ip,
+    _blocklist_match,
+    _challenge_headers,
     _meta_decrypt,
     _meta_encrypt,
     _safe_redirect,
+    crawler_name,
+    is_crawler,
+    load_policy,
 )
 
 SECRET = "test-secret-key-32-bytes-long!!!"
@@ -159,6 +157,24 @@ class TestLoadText:
             cache = Path(f.name)
         assert _load_text("https://example.com/x.txt", cache) == "cached content\n"
 
+    def test_http_fetch_writes_cache(self, tmp_path):
+        cache = tmp_path / "remote.txt"
+
+        class Response:
+            def __enter__(self):
+                return self
+
+            def __exit__(self, exc_type, exc, tb):
+                return False
+
+            def read(self):
+                return b"5.6.7.8\n"
+
+        with patch("flask_vouch.blocklist.urlopen", return_value=Response()):
+            assert _load_text("https://example.com/x.txt", cache) == "5.6.7.8\n"
+
+        assert cache.read_text() == "5.6.7.8\n"
+
 
 # --- blocklist.parse_blocklist ---
 
@@ -275,6 +291,66 @@ class TestIPBlocklist:
         bl._v4_ends = [int(end)]
         result = bl.match_range("1.5.0.0")
         assert result is not None and "-" in result
+
+    def test_load_force_bypasses_cache(self, tmp_path):
+        source = tmp_path / "source.txt"
+        source.write_text("1.2.3.4\n")
+        cache = tmp_path / "cache.txt"
+        cache.write_text("10.0.0.0/8\n")
+
+        bl = IPBlocklist(str(source))
+        bl._cache = cache
+        bl.load(force=True)
+
+        assert bl.contains("1.2.3.4")
+        assert not bl.contains("10.1.2.3")
+
+    def test_start_updates_refreshes_cache(self, tmp_path):
+        source = tmp_path / "blocklist.txt"
+        source.write_text("1.2.3.4\n")
+        cache = tmp_path / "cache.txt"
+        cache.write_text("10.0.0.0/8\n")
+
+        bl = IPBlocklist(str(source))
+        bl._cache = cache
+
+        class StopLoop(Exception):
+            pass
+
+        class FakeEvent:
+            def __init__(self):
+                self.calls = 0
+
+            def wait(self, interval):
+                self.calls += 1
+                if self.calls > 1:
+                    raise StopLoop
+
+        class FakeThread:
+            def __init__(self, target, daemon):
+                self.target = target
+                self.daemon = daemon
+                self.started = False
+
+            def start(self):
+                self.started = True
+                try:
+                    self.target()
+                except StopLoop:
+                    pass
+
+        with patch("flask_vouch.blocklist.threading.Event", return_value=FakeEvent()):
+            with patch("flask_vouch.blocklist.threading.Thread", FakeThread):
+                thread = bl.start_updates(interval=1)
+
+        assert isinstance(thread, FakeThread)
+        assert thread.started
+        assert bl.contains("1.2.3.4")
+        assert not cache.exists()
+
+    def test_contains_v6_hit(self):
+        bl = self._make_loaded("2001:db8::/32\n")
+        assert bl.contains("2001:db8::1234")
 
 
 # --- SHA256 challenge handler ---
@@ -408,6 +484,13 @@ class TestRateLimiter:
         rl.hit("k", 2, 60)
         assert not rl.hit("k", 2, 60)
 
+    def test_window_expires(self):
+        rl = RateLimiter()
+        with patch("flask_vouch.engine.time.time", side_effect=[100.0, 101.0, 170.0]):
+            assert rl.hit("k", 2, 60)
+            assert rl.hit("k", 2, 60)
+            assert rl.hit("k", 2, 60)
+
 
 # --- TokenTracker ---
 
@@ -429,6 +512,13 @@ class TestTokenTracker:
         tt = TokenTracker()
         for _ in range(10):
             assert tt.hit("c", 0, 60, 0)
+
+    def test_rate_window_expires(self):
+        tt = TokenTracker()
+        with patch("flask_vouch.engine.time.time", side_effect=[100.0, 101.0, 170.0]):
+            assert tt.hit("c", 2, 60, 0)
+            assert tt.hit("c", 2, 60, 0)
+            assert tt.hit("c", 2, 60, 0)
 
 
 # --- Store eviction ---
@@ -499,6 +589,18 @@ class TestCSRFToken:
             mock_time.time.return_value = time.time() - 9000
             token = engine.generate_csrf_token("cid", req)
         assert not engine.validate_csrf_token(token, "cid", req)
+
+    def test_invalid_signature_format(self):
+        engine = self.make_engine()
+        req = make_request()
+        token = _b64url_encode(b"cid:123:abc")
+        assert not engine.validate_csrf_token(token, "cid", req)
+
+    def test_invalid_payload_fields(self):
+        engine = self.make_engine()
+        bad_sig = _b64url_encode(engine._hmac(b"csrf:cid:123"))
+        token = _b64url_encode(f"cid:123:{bad_sig}".encode())
+        assert not engine.validate_csrf_token(token, "cid", make_request())
 
 
 # --- Engine.check_token_limit ---
@@ -572,6 +674,14 @@ class TestValidateChallengeExtra:
         token = engine.validate_challenge(c.id, "notanumber", req)
         assert token is None
 
+    def test_wrong_challenge_type_fails(self):
+        engine = self.make_engine()
+        req = make_request()
+        c = engine.issue_challenge(1, req)
+        c.challenge_type = "sha256"
+        engine.store.set(c)
+        assert engine.validate_challenge(c.id, "0", req) is None
+
 
 # --- bogon IP rule ---
 
@@ -623,6 +733,19 @@ class TestEngineProcessCookiePath:
         req = make_request(cookies={COOKIE_NAME: token})
         action, status, _, _ = engine.process(req)
         assert action == "pass"
+
+    def test_invalid_cookie_falls_back_to_policy(self):
+        engine = Engine(
+            secret=SECRET,
+            policy=Policy(rules=[Rule(name="all", action="deny", user_agent="Bot")]),
+        )
+        req = make_request(
+            user_agent="Bot/1.0", cookies={COOKIE_NAME: "bad.token.value"}
+        )
+        action, status, _, body = engine.process(req)
+        assert action == "deny"
+        assert status == 403
+        assert body == "Forbidden"
 
 
 # --- Vouch callable json_mode ---
@@ -903,3 +1026,150 @@ class TestEngineConstructorRules:
     def test_policy_kwarg_override(self):
         engine = Engine(secret=SECRET, cookie_name="_custom")
         assert engine.policy.cookie_name == "_custom"
+
+
+class TestEngineHelpers:
+    def test_crawler_name_compatible(self):
+        assert (
+            crawler_name("Mozilla/5.0 (compatible; TestBot/1.0; +https://example.com)")
+            == "TestBot"
+        )
+
+    def test_crawler_name_prefix(self):
+        assert crawler_name("Example Bot/1.0 - https://example.com") == "Example Bot"
+
+    def test_crawler_name_fallback_first_token(self):
+        assert crawler_name("bot/1.0") == "bot"
+
+    def test_crawler_name_browser_tail_name(self):
+        assert (
+            crawler_name(
+                "Mozilla/5.0 (compatible; Googlebot/2.1; +https://www.google.com/bot.html)"
+            )
+            == "Googlebot"
+        )
+
+    def test_is_crawler_false_for_normal_browser(self):
+        assert not is_crawler(
+            "Mozilla/5.0 (Windows NT 10.0; Win64; x64) AppleWebKit/537.36 Chrome/122.0 Safari/537.36"
+        )
+
+    def test_blocklist_match_list(self):
+        a = IPBlocklist.__new__(IPBlocklist)
+        b = IPBlocklist.__new__(IPBlocklist)
+        a.match_range = lambda ip: None
+        b.match_range = lambda ip: "10.0.0.0/8"
+        assert _blocklist_match([a, b], "10.1.2.3") == "10.0.0.0/8"
+
+    def test_blocklist_match_none(self):
+        assert _blocklist_match(None, "1.2.3.4") is None
+
+    def test_challenge_headers_extra_csp(self):
+        class Handler:
+            extra_csp = "frame-src https://example.com"
+
+        headers = _challenge_headers(Handler())
+        assert "frame-src https://example.com" in headers["Content-Security-Policy"]
+
+    def test_load_policy_uses_empty_config_when_missing(self, tmp_path):
+        rules = tmp_path / "rules.json"
+        rules.write_text('[{"name":"ok","action":"allow"}]')
+        policy = load_policy(config=tmp_path / "missing.json", rules=rules)
+        assert policy.rules[0].action == "allow"
+
+    def test_engine_sets_handler_secret(self):
+        class SecretHandler(SHA256):
+            secret = None
+
+        engine = Engine(
+            secret=SECRET, policy=Policy(rules=[], challenge_handler=SecretHandler())
+        )
+        assert engine.policy.challenge_handler.secret == SECRET.encode()
+
+
+class TestRuleExtraPaths:
+    def test_blocklist_rule_requires_hit(self):
+        class StubBlocklist:
+            def contains(self, ip):
+                return ip == "10.1.2.3"
+
+        rule = Rule(name="blocked", blocklist=True)
+        assert rule.matches(make_request(remote_addr="10.1.2.3"), StubBlocklist())
+        assert not rule.matches(make_request(remote_addr="8.8.8.8"), StubBlocklist())
+
+    def test_crawler_rule_requires_crawler(self):
+        rule = Rule(name="crawler", crawler=True)
+        assert rule.matches(make_request(user_agent="Scrapy/2.0"))
+        assert not rule.matches(make_request())
+
+    def test_header_rule_missing_header_fails(self):
+        rule = Rule(name="hdr", headers={"X-Test": "^ok$"})
+        assert not rule.matches(make_request(headers={}))
+
+
+class TestEngineVerifyBranches:
+    def make_engine(self, **policy_kwargs):
+        return Engine(
+            secret=SECRET,
+            policy=Policy(rules=[], challenge_handler=SHA256(), **policy_kwargs),
+        )
+
+    def test_handle_verify_uses_nonce_coordinates(self):
+        class CoordinateHandler(SHA256):
+            def to_difficulty(self, base: int) -> int:
+                return base
+
+            def nonce_from_form(self, raw: str) -> str:
+                return raw
+
+            def verify(
+                self, random_data: str, nonce: int | str, difficulty: int
+            ) -> bool:
+                return nonce == "0,0"
+
+        engine = Engine(
+            secret=SECRET,
+            policy=Policy(rules=[], challenge_handler=CoordinateHandler()),
+        )
+        req = make_request()
+        challenge = engine.issue_challenge(0, req)
+        csrf = engine.generate_csrf_token(challenge.id, req)
+
+        status, headers, _ = engine.handle_verify(
+            make_request(
+                method="POST",
+                path=engine.policy.verify_path,
+                form={
+                    "id": challenge.id,
+                    "nonce.x": "0",
+                    "nonce.y": "0",
+                    "csrf_token": csrf,
+                    "redirect": "/done",
+                },
+            )
+        )
+
+        assert status == 302
+        assert headers["Location"] == "/done"
+
+    def test_handle_verify_retry_uses_safe_redirect(self):
+        class RetryHandler(SHA256):
+            @property
+            def retry_on_failure(self) -> bool:
+                return True
+
+        engine = Engine(
+            secret=SECRET,
+            policy=Policy(rules=[], challenge_handler=RetryHandler()),
+        )
+        status, headers, body = engine.handle_verify(
+            make_request(
+                method="POST",
+                path=engine.policy.verify_path,
+                form={"id": "missing", "nonce": "bad", "redirect": "//evil.com"},
+            )
+        )
+
+        assert status == 200
+        assert "Content-Security-Policy" in headers
+        assert '"redirect": "/"' in body

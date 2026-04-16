@@ -1,6 +1,6 @@
 [project]
 name = "flask-Vouch"
-version = "1.1.0"
+version = "1.1.1"
 description = "Bot-challenge Python middleware issuing brief challenges, granting solvers signed access cookies."
 readme = "README.md"
 authors = [
@@ -64,19 +64,7 @@ addopts = """--cov=flask_vouch --cov-report=term-missing --cov-fail-under=90 -v 
 
 [tool.coverage.run]
 omit = [
-    "flask_vouch/challenges/audio_captcha.py",
-    "flask_vouch/challenges/character_captcha.py",
-    "flask_vouch/challenges/circle_captcha.py",
-    "flask_vouch/challenges/datasets.py",
-    "flask_vouch/challenges/image_captcha.py",
-    "flask_vouch/challenges/image_grid_captcha.py",
-    "flask_vouch/challenges/media.py",
-    "flask_vouch/challenges/navigator_attestation.py",
-    "flask_vouch/challenges/rotation_captcha.py",
-    "flask_vouch/challenges/sliding_captcha.py",
+    "flask_vouch/challenges/*",
+    "flask_vouch/extras/*",
     "flask_vouch/redis.py",
-    "flask_vouch/extras/error_handler.py",
-    "flask_vouch/extras/rate_limiter.py",
-    "flask_vouch/extras/third_party_captcha.py",
-    "flask_vouch/challenges/third_party_captcha.py",
 ]

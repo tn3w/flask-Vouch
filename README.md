@@ -163,6 +163,7 @@ from flask_vouch import (
     CupCaptcha,                 # cup fill CAPTCHA          (requires [image])
     SlidingCaptcha,             # sliding puzzle            (requires [image])
     CircleCaptcha,              # circle select CAPTCHA     (requires [image])
+    TraceCaptcha,               # curve-trace CAPTCHA       (pure Python, kinematics)
     ImageGridCaptcha,           # image grid CAPTCHA        (requires [image])
     AudioCaptcha,               # audio CAPTCHA             (requires [audio])
     NavigatorAttestation,       # browser signal attestation

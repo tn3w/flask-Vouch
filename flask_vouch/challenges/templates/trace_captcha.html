@@ -1,0 +1,312 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <meta name="robots" content="noindex" />
+        <title>Verify</title>
+        <style>
+            :root {
+                --bg: #f5f5f5;
+                --text: #111;
+                --surface: #e2e2e2;
+                --border: #bbb;
+                --muted: #777;
+                --link: #555;
+                --error: #c00;
+                --accent: {{ACCENT_COLOR}};
+                --track: #cfcfcf;
+                --trail: var(--accent);
+            }
+            @media (prefers-color-scheme: dark) {
+                :root {
+                    --bg: #0a0a0a;
+                    --text: #e0e0e0;
+                    --surface: #1a1a1a;
+                    --border: #333;
+                    --muted: #555;
+                    --link: #777;
+                    --error: #f55;
+                    --track: #2a2a2a;
+                }
+            }
+            * { margin: 0; padding: 0; box-sizing: border-box; }
+            body {
+                font-family: system-ui, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                min-height: 100vh;
+                background: var(--bg);
+                color: var(--text);
+            }
+            .box {
+                text-align: center;
+                max-width: 420px;
+                width: 100%;
+                padding: 2rem;
+            }
+            h2 {
+                margin-bottom: 0.4rem;
+                font-weight: 500;
+                font-size: 1.05rem;
+            }
+            .hint {
+                color: var(--muted);
+                font-size: 0.8rem;
+                margin-bottom: 1rem;
+            }
+            .canvas-wrap {
+                position: relative;
+                display: inline-block;
+                border-radius: 8px;
+                background: var(--surface);
+                border: 1px solid var(--border);
+                overflow: hidden;
+                margin-bottom: 1rem;
+                touch-action: none;
+            }
+            canvas {
+                display: block;
+                cursor: crosshair;
+            }
+            .reload-btn {
+                position: absolute;
+                top: 8px;
+                right: 8px;
+                width: 30px;
+                height: 30px;
+                background: rgba(0, 0, 0, 0.45);
+                border: none;
+                border-radius: 4px;
+                cursor: pointer;
+                display: flex;
+                align-items: center;
+                justify-content: center;
+            }
+            .reload-btn:hover { background: rgba(0, 0, 0, 0.7); }
+            .reload-btn svg {
+                width: 16px;
+                height: 16px;
+                fill: none;
+                stroke: #fff;
+                stroke-width: 2;
+                stroke-linecap: round;
+                stroke-linejoin: round;
+            }
+            button[type='submit'] {
+                width: 100%;
+                padding: 0.6rem;
+                background: var(--accent);
+                color: #111;
+                border: none;
+                border-radius: 4px;
+                font-size: 1rem;
+                font-weight: 600;
+                cursor: pointer;
+            }
+            button[type='submit']:disabled {
+                opacity: 0.5;
+                cursor: not-allowed;
+            }
+            button[type='submit']:hover:not(:disabled) { filter: brightness(0.9); }
+            .status {
+                font-size: 0.8rem;
+                color: var(--muted);
+                margin-bottom: 0.6rem;
+                min-height: 1rem;
+            }
+            .status.ok { color: var(--accent); }
+            .branding {
+                margin-top: 1.5rem;
+                font-size: 0.7rem;
+                color: var(--muted);
+            }
+            .branding a { color: var(--link); text-decoration: none; }
+            .branding a:hover { text-decoration: underline; }
+            .error {
+                color: var(--error);
+                font-size: 0.85rem;
+                margin-bottom: 0.8rem;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="box">
+            <h2>Trace the curve</h2>
+            <div class="hint">Press and drag from the green dot to the red dot.</div>
+            {{ERROR}}
+            <div class="canvas-wrap">
+                <canvas id="cv" width="{{width}}" height="{{height}}"></canvas>
+                <button
+                    type="button"
+                    class="reload-btn"
+                    title="New challenge"
+                    onclick="location.href='{{redirect}}'"
+                >
+                    <svg viewBox="0 0 24 24">
+                        <path d="M1 4v6h6" />
+                        <path d="M23 20v-6h-6" />
+                        <path
+                            d="M20.49 9A9 9 0 0 0 5.64 5.64L1 10m22 4-4.64 4.36A9 9 0 0 1 3.51 15"
+                        />
+                    </svg>
+                </button>
+            </div>
+            <div class="status" id="status">Awaiting trace…</div>
+            <form method="POST" action="{{verifyPath}}">
+                <input type="hidden" name="id" value="{{id}}" />
+                <input type="hidden" name="redirect" value="{{redirect}}" />
+                <input type="hidden" name="csrf_token" value="{{csrfToken}}" />
+                <input type="hidden" name="nonce" id="nonce" value="[]" />
+                <button type="submit" id="submit-btn" disabled>Verify</button>
+            </form>
+            {{BRANDING}}
+        </div>
+        <script>
+            (function () {
+                var path = {{pathJson}};
+                var start = [{{startX}}, {{startY}}];
+                var end = [{{endX}}, {{endY}}];
+                var width = {{width}};
+                var height = {{height}};
+
+                var cv = document.getElementById('cv');
+                var ctx = cv.getContext('2d');
+                var nonceField = document.getElementById('nonce');
+                var submitBtn = document.getElementById('submit-btn');
+                var statusEl = document.getElementById('status');
+
+                var accent = getComputedStyle(document.documentElement)
+                    .getPropertyValue('--accent').trim() || '#3b82f6';
+                var trackColor = getComputedStyle(document.documentElement)
+                    .getPropertyValue('--track').trim() || '#ccc';
+
+                var samples = [];
+                var tracing = false;
+                var started = false;
+
+                function drawBase(trailColor) {
+                    ctx.clearRect(0, 0, width, height);
+
+                    ctx.strokeStyle = trackColor;
+                    ctx.lineWidth = 14;
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+                    ctx.beginPath();
+                    ctx.moveTo(path[0][0], path[0][1]);
+                    for (var i = 1; i < path.length; i++) {
+                        ctx.lineTo(path[i][0], path[i][1]);
+                    }
+                    ctx.stroke();
+
+                    ctx.strokeStyle = 'rgba(255,255,255,0.55)';
+                    ctx.lineWidth = 1.5;
+                    ctx.setLineDash([4, 4]);
+                    ctx.beginPath();
+                    ctx.moveTo(path[0][0], path[0][1]);
+                    for (var j = 1; j < path.length; j++) {
+                        ctx.lineTo(path[j][0], path[j][1]);
+                    }
+                    ctx.stroke();
+                    ctx.setLineDash([]);
+
+                    ctx.fillStyle = '#22c55e';
+                    ctx.beginPath();
+                    ctx.arc(start[0], start[1], 8, 0, Math.PI * 2);
+                    ctx.fill();
+
+                    ctx.fillStyle = '#ef4444';
+                    ctx.beginPath();
+                    ctx.arc(end[0], end[1], 8, 0, Math.PI * 2);
+                    ctx.fill();
+                }
+
+                function drawTrail() {
+                    if (samples.length < 2) return;
+                    ctx.strokeStyle = accent;
+                    ctx.lineWidth = 5;
+                    ctx.lineCap = 'round';
+                    ctx.lineJoin = 'round';
+                    ctx.beginPath();
+                    ctx.moveTo(samples[0][0], samples[0][1]);
+                    for (var i = 1; i < samples.length; i++) {
+                        ctx.lineTo(samples[i][0], samples[i][1]);
+                    }
+                    ctx.stroke();
+                }
+
+                function redraw() {
+                    drawBase();
+                    drawTrail();
+                }
+
+                function pos(ev) {
+                    var r = cv.getBoundingClientRect();
+                    var sx = width / r.width;
+                    var sy = height / r.height;
+                    return [(ev.clientX - r.left) * sx, (ev.clientY - r.top) * sy];
+                }
+
+                function dist(a, b) {
+                    var dx = a[0] - b[0], dy = a[1] - b[1];
+                    return Math.sqrt(dx * dx + dy * dy);
+                }
+
+                function onDown(ev) {
+                    ev.preventDefault();
+                    var p = pos(ev);
+                    if (dist(p, start) > 48) {
+                        statusEl.textContent = 'Start on the green dot.';
+                        statusEl.classList.remove('ok');
+                        return;
+                    }
+                    tracing = true;
+                    started = true;
+                    samples = [[p[0], p[1], performance.now()]];
+                    statusEl.textContent = 'Tracing…';
+                    statusEl.classList.remove('ok');
+                    submitBtn.disabled = true;
+                    redraw();
+                    cv.setPointerCapture && cv.setPointerCapture(ev.pointerId);
+                }
+
+                function onMove(ev) {
+                    if (!tracing) return;
+                    ev.preventDefault();
+                    var p = pos(ev);
+                    samples.push([p[0], p[1], performance.now()]);
+                    redraw();
+                }
+
+                function onUp(ev) {
+                    if (!tracing) return;
+                    tracing = false;
+                    var last = samples[samples.length - 1];
+                    if (dist([last[0], last[1]], end) > 48) {
+                        statusEl.textContent = 'End on the red dot. Try again.';
+                        statusEl.classList.remove('ok');
+                        samples = [];
+                        submitBtn.disabled = true;
+                        drawBase();
+                        return;
+                    }
+                    nonceField.value = JSON.stringify(samples);
+                    submitBtn.disabled = false;
+                    statusEl.textContent = 'Trace captured. Click Verify.';
+                    statusEl.classList.add('ok');
+                }
+
+                cv.addEventListener('pointerdown', onDown);
+                cv.addEventListener('pointermove', onMove);
+                cv.addEventListener('pointerup', onUp);
+                cv.addEventListener('pointercancel', onUp);
+                cv.addEventListener('pointerleave', function (ev) {
+                    if (tracing) onUp(ev);
+                });
+
+                drawBase();
+            })();
+        </script>
+    </body>
+</html>

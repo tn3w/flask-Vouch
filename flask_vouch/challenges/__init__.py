@@ -11,6 +11,7 @@ from .sha256 import SHA256
 from .sha256_balloon import SHA256Balloon
 from .sliding_captcha import SlidingCaptcha
 from .third_party_captcha import ThirdPartyCaptchaChallenge
+from .trace_captcha import TraceCaptcha
 
 __all__ = [
     "AudioCaptcha",
@@ -29,5 +30,6 @@ __all__ = [
     "SlidingCaptcha",
     "ThirdPartyCaptchaChallenge",
     "CupCaptcha",
+    "TraceCaptcha",
     "validate_signals",
 ]

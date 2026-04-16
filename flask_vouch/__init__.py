@@ -13,6 +13,7 @@ from flask_vouch.challenges import (
     SHA256Balloon,
     SlidingCaptcha,
     ThirdPartyCaptchaChallenge,
+    TraceCaptcha,
 )
 from flask_vouch.engine import (
     Engine,
@@ -56,6 +57,7 @@ __all__ = [
     "SHA256Balloon",
     "SlidingCaptcha",
     "ThirdPartyCaptchaChallenge",
+    "TraceCaptcha",
     "CupCaptcha",
     "load_policy",
     "jwt_encode",

@@ -10,7 +10,6 @@ from flask_vouch.challenges import (
     SHA256,
     AudioCaptcha,
     ChallengeBase,
-    ChallengeType,
     CharacterCaptcha,
     CircleCaptcha,
     CupCaptcha,
@@ -20,8 +19,8 @@ from flask_vouch.challenges import (
     RotationCaptcha,
     SHA256Balloon,
     SlidingCaptcha,
+    TraceCaptcha,
 )
-from flask_vouch.engine import Engine
 
 SECRET = "preview-secret-key"
 DIFFICULTY = 10
@@ -51,6 +50,7 @@ HANDLERS = [
     ("Cup CAPTCHA", "cup-captcha", CupCaptcha(), "cup_captcha"),
     ("Sliding CAPTCHA", "sliding-captcha", SlidingCaptcha(), "sliding_captcha"),
     ("Circle CAPTCHA", "circle-captcha", CircleCaptcha(), "circle_captcha"),
+    ("Trace CAPTCHA", "trace-captcha", TraceCaptcha(), "trace_captcha"),
     (
         "Image Grid CAPTCHA",
         "image-grid-captcha",
