@@ -9,7 +9,7 @@ Bot-challenge middleware for Flask intercepts unrecognized visitors, issues proo
 [![License](https://img.shields.io/github/license/tn3w/flask-Vouch?style=flat-square)](https://github.com/tn3w/flask-Vouch/blob/main/LICENSE)
 [![Issues](https://img.shields.io/github/issues/tn3w/flask-Vouch?style=flat-square)](https://github.com/tn3w/flask-Vouch/issues)
 [![Stars](https://img.shields.io/github/stars/tn3w/flask-Vouch?style=flat-square)](https://github.com/tn3w/flask-Vouch/stargazers)
-[![Downloads](https://img.shields.io/pypi/dm/flask-Vouch?style=flat-square)](https://pypi.org/project/flask-Vouch/)
+[![Downloads](https://static.pepy.tech/personalized-badge/flask-Vouch?period=month&units=international_system&left_color=grey&right_color=blue&left_text=downloads/month&style=flat-square)](https://pepy.tech/project/flask-Vouch)
 
 </div>
 
