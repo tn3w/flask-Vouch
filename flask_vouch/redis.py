@@ -5,7 +5,7 @@ import threading
 import time
 from dataclasses import asdict, fields
 
-from flask_vouch.blocklist import BLOCKLIST_URL, _load_text, parse_blocklist
+from flask_vouch.netset import NETSET_URL, _load_text, parse_netset
 from flask_vouch.challenges.datasets import DatasetStore, set_default_store
 from flask_vouch.engine import (
     CHALLENGE_TTL,
@@ -225,7 +225,7 @@ return 0
 """
 
 
-class RedisIPBlocklist:
+class RedisNetSet:
     def __init__(self, client, prefix="tollbooth"):
         self._r = client
         self._prefix = prefix
@@ -242,9 +242,9 @@ class RedisIPBlocklist:
         width = 8 if version == 4 else 32
         return f"{val:0{width}x}"
 
-    def load(self, source=BLOCKLIST_URL):
+    def load(self, source=NETSET_URL):
         text = _load_text(source, None)
-        v4, v6 = parse_blocklist(text)
+        v4, v6 = parse_netset(text)
 
         for version, ranges in [(4, v4), (6, v6)]:
             zkey, hkey = self._keys(version)
@@ -270,7 +270,7 @@ class RedisIPBlocklist:
             self._check(keys=[zkey, hkey], args=[hex_ip]),
         )
 
-    def start_updates(self, interval=86400, source=BLOCKLIST_URL):
+    def start_updates(self, interval=86400, source=NETSET_URL):
         lock_key = f"{self._prefix}:bl:lock"
 
         def run():

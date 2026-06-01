@@ -2,7 +2,7 @@
 
 # 𐌅𐌋𐌀𐌔𐌊-ᕓꝊ𐌵𐌂𐋅
 
-Bot-challenge middleware for Flask — intercepts unrecognized visitors, issues proof-of-work or CAPTCHA challenges, and grants HMAC-signed JWT access cookies to solvers.
+Bot-challenge middleware for Flask intercepts unrecognized visitors, issues proof-of-work or CAPTCHA challenges, and grants HMAC-signed JWT access cookies to solvers.
 
 [![PyPI](https://img.shields.io/pypi/v/flask-Vouch?style=flat-square)](https://pypi.org/project/flask-Vouch/)
 [![Python](https://img.shields.io/pypi/pyversions/flask-Vouch?style=flat-square)](https://pypi.org/project/flask-Vouch/)
@@ -41,7 +41,7 @@ pip install flask-Vouch[audio]      # audio captcha (numpy, scipy)
 1. Every suspicious unauthenticated request matching the configured rules is redirected to a challenge page.
 2. A proof-of-work challenge (SHA-256 Balloon by default) is issued.
 3. The browser solves it in JavaScript and POSTs to `/.tollbooth/verify`.
-4. A valid solution sets a signed JWT cookie — subsequent requests pass through.
+4. A valid solution sets a signed JWT cookie subsequent requests pass through.
 
 ## Quick start
 
@@ -73,7 +73,7 @@ def create_app():
     return app
 ```
 
-`SECRET_KEY` fallback — if no `secret=` is passed, `app.config["SECRET_KEY"]` is used automatically:
+`SECRET_KEY` fallback if no `secret=` is passed, `app.config["SECRET_KEY"]` is used automatically:
 
 ```python
 app.config["SECRET_KEY"] = "change-me"
@@ -95,7 +95,7 @@ Pass as kwargs or via `app.config` with the `VOUCH_` prefix:
 | `cookie_ttl`        | `604800`             | Cookie lifetime in seconds (7 days)    |
 | `verify_path`       | `/.tollbooth/verify` | Challenge verification endpoint        |
 | `challenge_handler` | `SHA256Balloon`      | Challenge implementation               |
-| `blocklist`         | `None`               | `IPBlocklist` instance or list of them |
+| `blocklist`         | `None`               | `NetSet` instance or list of them      |
 
 ```python
 app.config["VOUCH_COOKIE_NAME"] = "_v"
@@ -147,7 +147,7 @@ Rule fields:
 | `remote_addresses` | `list[str]`   | CIDR ranges to match                      |
 | `difficulty`       | `int`         | Challenge difficulty (default: policy)    |
 | `weight`           | `int`         | Score added when `action=weigh`           |
-| `blocklist`        | `bool`        | Match IPs in the loaded blocklist         |
+| `blocklist`        | `bool`        | Match IPs in the loaded netset            |
 | `bogon_ip`         | `bool`        | Match non-global / bogon IPs              |
 | `crawler`          | `bool`        | Match detected crawler user agents        |
 
@@ -173,23 +173,33 @@ from flask_vouch import (
 vouch = Vouch(app, secret="s", challenge_handler=CharacterCaptcha())
 ```
 
-## IP blocklist
+## IP netset
+
+A netset is a newline-delimited list of IPs, CIDR ranges, or `start-end`
+ranges (`#` comments ignored) the [FireHOL ipset/netset] format. `NetSet`
+loads one from a file path or URL, merges overlapping ranges, and answers
+membership in O(log n).
 
 ```python
-from flask_vouch import Vouch, IPBlocklist
+from flask_vouch import Vouch, NetSet
 
-bl = IPBlocklist()   # defaults to bundled blocklist URL
-bl.load()
-bl.start_updates()   # auto-refresh daily in a daemon thread
+ns = NetSet()        # defaults to bundled blocklist.netset URL
+ns.load()
+ns.start_updates()   # auto-refresh daily in a daemon thread
 
-vouch = Vouch(app, secret="s", blocklist=bl)
+vouch = Vouch(app, secret="s", blocklist=ns)
 ```
 
-Multiple blocklists:
+Custom source(s) path or URL:
 
 ```python
-vouch = Vouch(app, secret="s", blocklist=[bl1, bl2])
+ns = NetSet("https://example.com/bad-ips.netset")
+many = NetSet.from_sources(["a.netset", "b.netset"])
+
+vouch = Vouch(app, secret="s", blocklist=[ns1, ns2])
 ```
+
+[FireHOL ipset/netset]: https://github.com/firehol/blocklist-ipsets
 
 ## Redis backend
 

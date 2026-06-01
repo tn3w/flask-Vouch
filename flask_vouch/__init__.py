@@ -1,4 +1,4 @@
-from flask_vouch.blocklist import IPBlocklist
+from flask_vouch.netset import NetSet
 from flask_vouch.challenges import (
     SHA256,
     AudioCaptcha,
@@ -35,7 +35,7 @@ from flask_vouch.extras.third_party_captcha import (
 )
 from flask_vouch.vouch import Vouch, VouchKwargs
 
-__version__ = "1.0.0"
+__version__ = "1.2.0"
 
 __all__ = [
     "Vouch",
@@ -49,7 +49,7 @@ __all__ = [
     "ImageCaptcha",
     "ImageGridCaptcha",
     "RotationCaptcha",
-    "IPBlocklist",
+    "NetSet",
     "NavigatorAttestation",
     "Policy",
     "Rule",

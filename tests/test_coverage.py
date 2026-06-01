@@ -8,14 +8,14 @@ from unittest.mock import patch
 import flask
 
 from flask_vouch import Engine, Policy, Rule, Vouch
-from flask_vouch.blocklist import (
-    IPBlocklist,
+from flask_vouch.netset import (
+    NetSet,
     _cache_path_for,
     _contains,
     _load_text,
     _merge,
     _parse_line,
-    parse_blocklist,
+    parse_netset,
 )
 from flask_vouch.challenges.base import (
     ChallengeBase,
@@ -170,23 +170,23 @@ class TestLoadText:
             def read(self):
                 return b"5.6.7.8\n"
 
-        with patch("flask_vouch.blocklist.urlopen", return_value=Response()):
+        with patch("flask_vouch.netset.urlopen", return_value=Response()):
             assert _load_text("https://example.com/x.txt", cache) == "5.6.7.8\n"
 
         assert cache.read_text() == "5.6.7.8\n"
 
 
-# --- blocklist.parse_blocklist ---
+# --- blocklist.parse_netset ---
 
 
 class TestParseBlocklist:
     def test_parses_mixed(self):
         text = "# header\n10.0.0.0/8\n192.168.1.1\nbad\n"
-        v4, v6 = parse_blocklist(text)
+        v4, v6 = parse_netset(text)
         assert len(v4) >= 1
 
     def test_empty(self):
-        v4, v6 = parse_blocklist("")
+        v4, v6 = parse_netset("")
         assert v4 == [] and v6 == []
 
 
@@ -206,12 +206,12 @@ class TestContains:
         assert not _contains([10], [20], 21)
 
 
-# --- IPBlocklist ---
+# --- NetSet ---
 
 
-class TestIPBlocklist:
+class TestNetSet:
     def _make_loaded(self, text):
-        bl = IPBlocklist.__new__(IPBlocklist)
+        bl = NetSet.__new__(NetSet)
         bl._source = "local"
         bl._cache = None
         bl._v4_starts = []
@@ -220,7 +220,7 @@ class TestIPBlocklist:
         bl._v6_ends = []
         import ipaddress
 
-        v4, v6 = parse_blocklist(text)
+        v4, v6 = parse_netset(text)
         s4, e4 = zip(*v4) if v4 else ([], [])
         s6, e6 = zip(*v6) if v6 else ([], [])
         bl._v4_starts, bl._v4_ends = list(s4), list(e4)
@@ -244,11 +244,11 @@ class TestIPBlocklist:
         assert len(bl) >= 1
 
     def test_from_sources_single(self):
-        result = IPBlocklist.from_sources("https://example.com/x.txt")
-        assert isinstance(result, IPBlocklist)
+        result = NetSet.from_sources("https://example.com/x.txt")
+        assert isinstance(result, NetSet)
 
     def test_from_sources_list(self):
-        result = IPBlocklist.from_sources(
+        result = NetSet.from_sources(
             ["https://a.com/a.txt", "https://b.com/b.txt"]
         )
         assert len(result) == 2
@@ -257,7 +257,7 @@ class TestIPBlocklist:
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
             f.write("1.2.3.4\n10.0.0.0/8\n")
             name = f.name
-        bl = IPBlocklist(name)
+        bl = NetSet(name)
         bl.load()
         assert bl.contains("1.2.3.4")
         assert bl.contains("10.5.5.5")
@@ -298,7 +298,7 @@ class TestIPBlocklist:
         cache = tmp_path / "cache.txt"
         cache.write_text("10.0.0.0/8\n")
 
-        bl = IPBlocklist(str(source))
+        bl = NetSet(str(source))
         bl._cache = cache
         bl.load(force=True)
 
@@ -311,7 +311,7 @@ class TestIPBlocklist:
         cache = tmp_path / "cache.txt"
         cache.write_text("10.0.0.0/8\n")
 
-        bl = IPBlocklist(str(source))
+        bl = NetSet(str(source))
         bl._cache = cache
 
         class StopLoop(Exception):
@@ -339,8 +339,8 @@ class TestIPBlocklist:
                 except StopLoop:
                     pass
 
-        with patch("flask_vouch.blocklist.threading.Event", return_value=FakeEvent()):
-            with patch("flask_vouch.blocklist.threading.Thread", FakeThread):
+        with patch("flask_vouch.netset.threading.Event", return_value=FakeEvent()):
+            with patch("flask_vouch.netset.threading.Thread", FakeThread):
                 thread = bl.start_updates(interval=1)
 
         assert isinstance(thread, FakeThread)
@@ -1036,7 +1036,7 @@ class TestEngineHelpers:
         )
 
     def test_crawler_name_prefix(self):
-        assert crawler_name("Example Bot/1.0 - https://example.com") == "Example Bot"
+        assert crawler_name("Example Bot/1.0 - https://example.com") == "Example"
 
     def test_crawler_name_fallback_first_token(self):
         assert crawler_name("bot/1.0") == "bot"
@@ -1055,8 +1055,8 @@ class TestEngineHelpers:
         )
 
     def test_blocklist_match_list(self):
-        a = IPBlocklist.__new__(IPBlocklist)
-        b = IPBlocklist.__new__(IPBlocklist)
+        a = NetSet.__new__(NetSet)
+        b = NetSet.__new__(NetSet)
         a.match_range = lambda ip: None
         b.match_range = lambda ip: "10.0.0.0/8"
         assert _blocklist_match([a, b], "10.1.2.3") == "10.0.0.0/8"

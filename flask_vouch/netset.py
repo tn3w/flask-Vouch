@@ -5,10 +5,10 @@ from bisect import bisect_right
 from pathlib import Path
 from urllib.request import urlopen
 
-log = logging.getLogger("flask_vouch.blocklist")
+log = logging.getLogger("flask_vouch.netset")
 
-BLOCKLIST_URL = (
-    "https://github.com/tn3w/IPBlocklist/releases/latest/download/blocklist.txt"
+NETSET_URL = (
+    "https://github.com/tn3w/IPBlocklist/releases/latest/download/blocklist.netset"
 )
 
 
@@ -50,15 +50,15 @@ def _merge(ranges):
 def _cache_path_for(source: str) -> Path | None:
     if not source.startswith(("http://", "https://")):
         return None
-    filename = source.rstrip("/").rsplit("/", 1)[-1] or "blocklist.txt"
-    return Path.home() / ".cache" / "tollbooth" / filename
+    filename = source.rstrip("/").rsplit("/", 1)[-1] or "blocklist.netset"
+    return Path.home() / ".cache" / "flask_vouch" / filename
 
 
 def _load_text(source: str, cache: Path | None) -> str:
     if not source.startswith(("http://", "https://")):
         return Path(source).read_text()
     if cache and cache.exists():
-        log.debug("Loading blocklist from cache: %s", cache)
+        log.debug("Loading netset from cache: %s", cache)
         return cache.read_text()
     with urlopen(source) as resp:
         text = resp.read().decode()
@@ -68,7 +68,7 @@ def _load_text(source: str, cache: Path | None) -> str:
     return text
 
 
-def parse_blocklist(text):
+def parse_netset(text):
     v4, v6 = [], []
     for line in text.splitlines():
         result = _parse_line(line)
@@ -86,8 +86,8 @@ def _contains(starts, ends, val):
     return idx >= 0 and val <= ends[idx]
 
 
-class IPBlocklist:
-    def __init__(self, source: str = BLOCKLIST_URL):
+class NetSet:
+    def __init__(self, source: str = NETSET_URL):
         self._source = source
         self._cache = _cache_path_for(source)
         self._v4_starts: list[int] = []
@@ -96,9 +96,7 @@ class IPBlocklist:
         self._v6_ends: list[int] = []
 
     @classmethod
-    def from_sources(
-        cls, sources: str | list[str]
-    ) -> "IPBlocklist | list[IPBlocklist]":
+    def from_sources(cls, sources: str | list[str]) -> "NetSet | list[NetSet]":
         if isinstance(sources, str):
             return cls(sources)
         return [cls(s) for s in sources]
@@ -106,7 +104,7 @@ class IPBlocklist:
     def load(self, force: bool = False):
         cache = None if force else self._cache
         text = _load_text(self._source, cache)
-        v4, v6 = parse_blocklist(text)
+        v4, v6 = parse_netset(text)
         s4, e4 = zip(*v4) if v4 else ([], [])
         s6, e6 = zip(*v6) if v6 else ([], [])
         self._v4_starts, self._v4_ends = list(s4), list(e4)
@@ -129,9 +127,9 @@ class IPBlocklist:
                     if self._cache and self._cache.exists():
                         self._cache.unlink()
                     self.load()
-                    log.info("Blocklist updated: %d ranges", len(self))
+                    log.info("NetSet updated: %d ranges", len(self))
                 except Exception:
-                    log.warning("Blocklist update failed", exc_info=True)
+                    log.warning("NetSet update failed", exc_info=True)
 
         thread = threading.Thread(target=run, daemon=True)
         thread.start()

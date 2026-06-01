@@ -14,85 +14,110 @@ from threading import Lock
 from typing import TYPE_CHECKING, TypedDict, Unpack
 
 if TYPE_CHECKING:
-    from flask_vouch.blocklist import IPBlocklist
-
-try:
-    import re2 as _regex  # type: ignore[reportMissingImports]
-except ImportError:
-    import re as _regex
-
-_match_bot_signal = _regex.compile(
-    r"(?i)bot\b|crawl|spider|scrape|fetch|scan\b|index"
-    r"|preview|slurp|archiv|headless"
-    r"|\+https?://|@[\w.-]+\.\w{2,}\b"
-).search
-
-_match_browser_sign = _regex.compile(
-    r"(?i)mozilla/|webkit|gecko|trident|presto|khtml"
-    r"|opera[\s/]|links\s|lynx/"
-    r"|\((?:windows|macintosh|x11|linux)"
-).search
-
-_match_bare_compat = _regex.compile(
-    r"(?i)\(compatible;" r"(?![^)]*(?:windows|mac|linux|msie|konqueror))" r"[^)]*\)"
-).search
-
-_match_url = _regex.compile(r"(?:^|[+;]|\s-\s)https?://[^\s);,]+").search
-_extract_url = _regex.compile(r"https?://[^\s);,]+").search
-
-_match_known_tool = _regex.compile(
-    r"(?i)lighthouse|playwright|selenium|wget[\s/]"
-    r"|nikto|sqlmap|nmap\b|pingdom|httrack"
-    r"|google[\s-](?:favicon|ads|safety|extended)"
-    r"|\bby\s+\S+\.(?:com|org|net)\b"
-    r"|^[\w.-]+\.(?:com|net|org|io|ai)[/\s]"
-    r"|;\s*\w+-agent[);]"
-).search
-
-_search_compatible_name = _regex.compile(
-    r"(?i)\(compatible;\s*([A-Za-z][\w.-]*)(?:/[\w.-]+)?"
-).search
-_search_prefix_name = _regex.compile(
-    r"^([A-Z][\w.-]*(?: [A-Z][\w.-]*)*)(?=(?:/[\w.-]+)?(?:\s|$| - ))"
-).search
-_find_name = _regex.compile(r"([A-Z][\w.-]*(?: [A-Z][\w.-]*)*)(?:/[\w.-]+)?").findall
-_strip_comments = _regex.compile(r"\([^)]*\)").sub
-_strip_browser_bits = _regex.compile(
-    r"\b(?:Mozilla/\S+|AppleWebKit/\S+|KHTML,?|like|Gecko|"
-    r"Chrome/\S+|Chromium/\S+|Safari/\S+|Version/\S+|Firefox/\S+|"
-    r"Ubuntu|Mobile)\b"
-).sub
-
-
-@lru_cache(maxsize=2048)
-def is_crawler(user_agent: str) -> bool:
-    return bool(
-        _match_bot_signal(user_agent)
-        or not _match_browser_sign(user_agent)
-        or _match_bare_compat(user_agent)
-        or _match_known_tool(user_agent)
-        or _match_url(user_agent)
-    )
-
-
-@lru_cache(maxsize=2048)
-def crawler_name(user_agent: str) -> str | None:
-    match = _search_compatible_name(user_agent)
-    if match:
-        return match.group(1)
-    if not user_agent.startswith("Mozilla/5.0"):
-        match = _search_prefix_name(user_agent)
-        if match:
-            return match.group(1)
-        parts = user_agent.split()
-        return parts[0].split("/", 1)[0] if parts else None
-    names = _find_name(_strip_browser_bits(" ", _strip_comments(" ", user_agent)))
-    return names[-1] if names else None
-
+    from flask_vouch.netset import NetSet
 
 from flask_vouch.challenges import ChallengeBase, ChallengeHandler, SHA256Balloon
 
 Challenge = ChallengeBase
+
+_KEYWORDS = (
+    "bot",
+    "crawl",
+    "spider",
+    "scrape",
+    "slurp",
+    "archiv",
+    "headless",
+    "indexer",
+    "preview",
+    "fetch",
+    "monitor",
+    "uptime",
+    "feed",
+    "check",
+    "validator",
+    "scan",
+    "probe",
+    "rank",
+    "analyz",
+    "synthetic",
+    "sitemap",
+    "favicon",
+    "resolver",
+    "sleuth",
+    "ghost",
+    "page speed",
+    "search console",
+    "-publisher",
+    "-agent",
+    "www.",
+)
+_REAL_BROWSERS = (
+    "opera/",
+    "lynx/",
+    "links ",
+    "links/",
+    "elinks/",
+    "w3m/",
+    "konqueror/",
+    "icab/",
+    "netsurf",
+    "seamonkey/",
+    "iceweasel/",
+)
+_REAL_COMPAT = (
+    "msie",
+    "konqueror",
+    "avant",
+    "maxthon",
+    "sleipnir",
+    "acoo",
+    "slcc",
+    ".net clr",
+    "presto",
+)
+
+
+def _bare_compatible(low: str) -> bool:
+    start = low.find("(compatible;")
+    if start == -1:
+        return False
+    end = low.find(")", start)
+    return end != -1 and not any(token in low[start:end] for token in _REAL_COMPAT)
+
+
+@lru_cache(maxsize=2048)
+def is_crawler(user_agent: str) -> bool:
+    low = user_agent.lower()
+
+    if any(keyword in low for keyword in _KEYWORDS):
+        return True
+    if "http://" in user_agent or "https://" in user_agent:
+        return True
+    if not user_agent.startswith("Mozilla/") and not any(
+        b in low for b in _REAL_BROWSERS
+    ):
+        return True
+    return _bare_compatible(low)
+
+
+@lru_cache(maxsize=2048)
+def crawler_name(user_agent: str) -> str | None:
+    if user_agent.startswith("Mozilla/"):
+        compat = user_agent.find("(compatible;")
+        if compat == -1:
+            return None
+        start = compat + len("(compatible;")
+        while start < len(user_agent) and user_agent[start] == " ":
+            start += 1
+        end = start
+        while end < len(user_agent) and user_agent[end] not in " /;)":
+            end += 1
+        name = user_agent[start:end]
+        return name or None
+
+    head = user_agent.split(None, 1)[0] if user_agent else ""
+    return head.split("/", 1)[0] or None
 
 COOKIE_NAME = "_tollbooth"
 VERIFY_PATH = "/.tollbooth/verify"
@@ -467,7 +492,7 @@ class EngineKwargs(TypedDict, total=False):
     default_rules: bool
     config_file: str | None
     rules_file: str | None
-    blocklist: "IPBlocklist | list[IPBlocklist] | None"
+    blocklist: "NetSet | list[NetSet] | None"
     challenge_threshold: int
     default_difficulty: int
     challenge_handler: ChallengeHandler
