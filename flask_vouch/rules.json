@@ -7,12 +7,12 @@
     {
         "name": "known-bad",
         "action": "DENY",
-        "user_agent": "(?i:Sogou|MJ12bot|AhrefsBot|SemrushBot|DotBot|BLEXBot|DataForSeoBot|Bytedance)"
+        "user_agent": "(?i:Sogou|MJ12bot|AhrefsBot|SemrushBot|DotBot|BLEXBot|DataForSeoBot|Bytedance|SerpstatBot|MegaIndex|Seekport|ZoominfoBot|magpie-crawler|Barkrowler|SeznamBot|LinkpadBot|spbot|VelenPublicWebCrawler)"
     },
     {
         "name": "vuln-scanners",
         "action": "DENY",
-        "user_agent": "(?i:Nmap|Nikto|sqlmap|ZmEu|masscan|WPScan|Acunetix|Nessus|dirbuster)"
+        "user_agent": "(?i:Nmap|Nikto|sqlmap|ZmEu|masscan|WPScan|Acunetix|Nessus|dirbuster|nuclei|gobuster|feroxbuster|wfuzz|ffuf|httpx|Qualys|OpenVAS|zgrab|CensysInspect|InternetMeasurement|l9scan|Expanse)"
     },
     {
         "name": "wp-scanners",
@@ -20,9 +20,19 @@
         "path": "(?i:wp-login|wp-admin|xmlrpc\\.php|wp-config)"
     },
     {
+        "name": "cms-probes",
+        "action": "DENY",
+        "path": "(?i:/phpmyadmin|/pma/|/adminer|/administrator/|/typo3/|/wp-content/(?:uploads|plugins)/.*\\.php|/wp-json/wp/v2/users)"
+    },
+    {
+        "name": "framework-leak-probes",
+        "action": "DENY",
+        "path": "(?i:/actuator(?:/|$)|/_profiler/|/server-status|/server-info|/\\.vscode/|/\\.idea/|/config\\.(?:json|yml|yaml)$|/composer\\.(?:json|lock)$|/package-lock\\.json$|/\\.npmrc$|/credentials$)"
+    },
+    {
         "name": "dotfile-probes",
         "action": "DENY",
-        "path": "/\\.(env|git|svn|htaccess|htpasswd|DS_Store|aws)"
+        "path": "/\\.(env|git|svn|hg|bzr|htaccess|htpasswd|DS_Store|aws|ssh|bash_history|netrc)"
     },
     {
         "name": "shell-probes",
@@ -35,9 +45,14 @@
         "path": "(\\.\\./|%2e%2e|%252e)"
     },
     {
+        "name": "injection-attempts",
+        "action": "DENY",
+        "path": "(?i:union(?:\\s|%20|\\+)+select|/etc/passwd|\\bjava\\.lang\\.|\\$\\{jndi:|<script|%3cscript|/bin/(?:sh|bash))"
+    },
+    {
         "name": "well-known",
         "action": "ALLOW",
-        "path": "^/.well-known/"
+        "path": "^/\\.well-known/"
     },
     {
         "name": "favicon",
@@ -48,6 +63,11 @@
         "name": "robots-txt",
         "action": "ALLOW",
         "path": "^/robots\\.txt$"
+    },
+    {
+        "name": "site-metadata",
+        "action": "ALLOW",
+        "path": "^/(sitemap(?:[\\w-]*)?\\.xml|sitemap_index\\.xml|ads\\.txt|app-ads\\.txt|humans\\.txt|apple-app-site-association|manifest\\.json|browserconfig\\.xml)$"
     },
     {
         "name": "health-checks",
@@ -83,19 +103,19 @@
         "name": "ai-bots",
         "action": "CHALLENGE",
         "difficulty": 14,
-        "user_agent": "(?i:GPTBot|ChatGPT|Claude-Web|Anthropic|CCBot|Google-Extended|Bytespider|PetalBot|Diffbot|Cohere-ai|PerplexityBot|YouBot)"
+        "user_agent": "(?i:GPTBot|ChatGPT|Claude-Web|ClaudeBot|Anthropic|CCBot|Google-Extended|Bytespider|PetalBot|Diffbot|Cohere-ai|PerplexityBot|YouBot|Amazonbot|Meta-ExternalAgent|Applebot-Extended|Timpibot|ImagesiftBot|OAI-SearchBot)"
     },
     {
         "name": "headless-browsers",
         "action": "CHALLENGE",
         "difficulty": 12,
-        "user_agent": "(?i:HeadlessChrome|PhantomJS|Playwright|Puppeteer|Selenium)"
+        "user_agent": "(?i:HeadlessChrome|PhantomJS|Playwright|Puppeteer|Selenium|electron|cypress|Nightmare|SlimerJS)"
     },
     {
         "name": "aggressive-scrapers",
         "action": "CHALLENGE",
         "difficulty": 12,
-        "user_agent": "(?i:Scrapy|colly|HttpClient|python-requests|Go-http-client|Java/|libwww-perl|mechanize)"
+        "user_agent": "(?i:Scrapy|colly|HttpClient|python-requests|aiohttp|httpx|urllib|Go-http-client|Java/|libwww-perl|mechanize|node-fetch|axios|okhttp|Guzzle|reqwest|got\\s|undici)"
     },
     {
         "name": "empty-ua",
@@ -145,5 +165,23 @@
         "action": "WEIGH",
         "weight": 2,
         "headers": { "Connection": "(?i:^close$)" }
+    },
+    {
+        "name": "wildcard-accept-only",
+        "action": "WEIGH",
+        "weight": 2,
+        "headers": { "Accept": "^\\*/\\*$" }
+    },
+    {
+        "name": "no-accept-encoding",
+        "action": "WEIGH",
+        "weight": 2,
+        "headers": { "Accept-Encoding": "^$" }
+    },
+    {
+        "name": "automation-headers",
+        "action": "WEIGH",
+        "weight": 4,
+        "headers": { "X-Requested-With": "(?i:scrapy|selenium|webdriver)" }
     }
 ]
