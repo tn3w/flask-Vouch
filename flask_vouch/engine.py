@@ -140,6 +140,7 @@ CSRF_TTL = 1800
 
 BRANDING = True
 ACCENT_COLOR = "#44ff88"
+COOKIE_SECURE = True
 
 
 class Request(TypedDict):
@@ -151,6 +152,7 @@ class Request(TypedDict):
     headers: dict[str, str]
     cookies: dict[str, str]
     form: dict[str, str]
+    secure: bool
 
 
 def _b64url_encode(data: bytes) -> str:
@@ -294,17 +296,20 @@ class TokenTracker:
     ) -> bool:
         now = time.time()
         with self._lock:
-            if total_limit > 0:
-                count = self._totals.get(cid, 0) + 1
-                if count > total_limit:
-                    return False
-                self._totals[cid] = count
-
+            hits = None
             if rate_limit > 0:
                 cutoff = now - rate_window
                 hits = [t for t in self._windows.get(cid, []) if t > cutoff]
                 if len(hits) >= rate_limit:
                     return False
+
+            if total_limit > 0 and self._totals.get(cid, 0) + 1 > total_limit:
+                return False
+
+            if total_limit > 0:
+                self._totals[cid] = self._totals.get(cid, 0) + 1
+
+            if hits is not None:
                 hits.append(now)
                 self._windows[cid] = hits
 
@@ -380,6 +385,7 @@ class Policy:
     cookie_ttl: int = COOKIE_TTL
     branding: bool = BRANDING
     accent_color: str = ACCENT_COLOR
+    cookie_secure: bool = COOKIE_SECURE
     max_challenge_failures: int = MAX_CHALLENGE_FAILURES
     max_challenge_requests: int = MAX_CHALLENGE_REQUESTS
     rate_limit_window: int = RATE_LIMIT_WINDOW
@@ -398,7 +404,7 @@ class Policy:
             if not rule.matches(request, blocklist):
                 continue
             if rule.action == "allow":
-                return "allow", 0, None
+                return "allow", 0, rule
             if rule.action == "deny":
                 return "deny", 0, rule
             if rule.action == "challenge":
@@ -502,6 +508,7 @@ class EngineKwargs(TypedDict, total=False):
     cookie_ttl: int
     branding: bool
     accent_color: str
+    cookie_secure: bool
     max_challenge_failures: int
     max_challenge_requests: int
     rate_limit_window: int

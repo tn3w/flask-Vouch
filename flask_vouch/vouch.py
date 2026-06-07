@@ -10,8 +10,6 @@ import flask
 from flask_vouch.engine import (
     Engine,
     EngineKwargs,
-    Policy,
-    Rule,
     _blocklist_match,
     _challenge_headers,
     _safe_redirect,
@@ -56,15 +54,20 @@ def _to_request():
         "headers": dict(r.headers),
         "cookies": dict(r.cookies),
         "form": dict(r.form),
+        "json": r.get_json(silent=True) if r.is_json else None,
+        "secure": r.is_secure,
     }
 
 
 def _to_response(result):
-    return flask.Response(
+    response = flask.Response(
         result.body,
         status=result.status,
         headers=result.headers,
     )
+    if result.cookie:
+        response.set_cookie(**result.cookie)
+    return response
 
 
 def _crawler_fields(user_agent: str) -> tuple[bool, str | None]:
@@ -72,11 +75,27 @@ def _crawler_fields(user_agent: str) -> tuple[bool, str | None]:
     return crawling, (_crawler_name(user_agent) if crawling else None)
 
 
+def _make_claims(user_agent: str, client_id: str, **overrides) -> types.SimpleNamespace:
+    is_crawler, crawler_name = _crawler_fields(user_agent)
+    return types.SimpleNamespace(
+        **{
+            "score": None,
+            "matched_rule": None,
+            "blocklist_match": None,
+            "is_crawler": is_crawler,
+            "crawler_name": crawler_name,
+            "client_id": client_id,
+            **overrides,
+        }
+    )
+
+
 class _Response:
-    def __init__(self, status: int, headers: dict, body: str):
+    def __init__(self, status: int, headers: dict, body: str, cookie: dict | None = None):
         self.status = status
         self.headers = headers
         self.body = body
+        self.cookie = cookie
 
 
 class Vouch:
@@ -100,10 +119,8 @@ class Vouch:
 
     def __init__(self, app=None, **kwargs: Unpack[VouchKwargs]):
         self._kwargs = kwargs
-        exclude = kwargs.pop("exclude", None) if isinstance(kwargs, dict) else None
-        json_mode = (
-            kwargs.pop("json_mode", False) if isinstance(kwargs, dict) else False
-        )
+        exclude = kwargs.pop("exclude", None)
+        json_mode = kwargs.pop("json_mode", False)
         self._excludes = [re.compile(p) for p in (exclude or [])]
         self._json_mode = json_mode
         self._engine: Engine | None = None
@@ -191,6 +208,11 @@ class Vouch:
             200, _challenge_headers(self.engine.policy.challenge_handler), body
         )
 
+    def _handle_poll(self, request: dict) -> _Response:
+        handler = self.engine.policy.challenge_handler
+        result = handler.handle_http_poll(request.get("json"), self.engine)
+        return _Response(200, dict(_JSON_CT), json.dumps(result))
+
     def _handle_verify(self, request: dict) -> _Response:
         form = request["form"]
         nonce = form.get("nonce") or ",".join(
@@ -240,18 +262,29 @@ class Vouch:
 
         redirect = _safe_redirect(form.get("redirect", "/"))
         p = self.engine.policy
-        cookie_val = (
-            f"{p.cookie_name}={token}; "
-            f"Path=/; HttpOnly; SameSite=Strict; "
-            f"Secure; Max-Age={p.cookie_ttl}"
-        )
-        return _Response(302, {"Location": redirect, "Set-Cookie": cookie_val}, "")
+        cookie = {
+            "key": p.cookie_name,
+            "value": token,
+            "max_age": p.cookie_ttl,
+            "path": "/",
+            "httponly": True,
+            "samesite": "Strict",
+            "secure": p.cookie_secure and request.get("secure", False),
+        }
+        return _Response(302, {"Location": redirect}, "", cookie=cookie)
 
-    def process_request(self, request: dict) -> _Response | None:
+    def process_request(
+        self, request: dict, force: str | None = None, deny_challenges: bool = False
+    ) -> _Response | None:
         if self.is_excluded(request["path"]):
             return None
 
         if self.is_verify(request["method"], request["path"]):
+            handler = self.engine.policy.challenge_handler
+            if request.get("json") is not None:
+                if handler.supports_http_poll:
+                    return self._handle_poll(request)
+                return _Response(400, dict(_JSON_CT), '{"error":"bad request"}')
             cookie = request["cookies"].get(self.engine.policy.cookie_name)
             if cookie and self.engine.check_cookie(cookie, request):
                 return self._deny(self._is_json(request))
@@ -261,43 +294,40 @@ class Vouch:
         if cookie:
             claims = self.engine.check_cookie(cookie, request)
             if claims and self.engine.check_token_limit(claims["cid"]):
-                is_crawler, crawler_name = _crawler_fields(request["user_agent"])
                 client_id = self.engine.generate_client_id(request)
-                request["_claims"] = types.SimpleNamespace(
-                    score=None,
-                    matched_rule=None,
-                    blocklist_match=None,
-                    is_crawler=is_crawler,
-                    crawler_name=crawler_name,
-                    client_id=client_id,
-                    **claims,
+                request["_claims"] = _make_claims(
+                    request["user_agent"], client_id, **claims
                 )
                 return None
 
-        action, difficulty, matched_rule = self.engine.policy.evaluate(
-            request, self.engine.blocklist
-        )
+        if force:
+            action, difficulty, matched_rule = (
+                force,
+                self.engine.policy.default_difficulty,
+                None,
+            )
+        else:
+            action, difficulty, matched_rule = self.engine.policy.evaluate(
+                request, self.engine.blocklist
+            )
 
         if action == "allow":
-            is_crawler, crawler_name = _crawler_fields(request["user_agent"])
             bl_match = (
                 _blocklist_match(self.engine.blocklist, request["remote_addr"])
                 if matched_rule and matched_rule.blocklist
                 else None
             )
             client_id = self.engine.generate_client_id(request)
-            request["_claims"] = types.SimpleNamespace(
-                score=None,
+            request["_claims"] = _make_claims(
+                request["user_agent"],
+                client_id,
                 matched_rule=matched_rule.name if matched_rule else None,
                 blocklist_match=bl_match,
-                is_crawler=is_crawler,
-                crawler_name=crawler_name,
-                client_id=client_id,
             )
             return None
 
         use_json = self._is_json(request)
-        if action == "deny":
+        if action == "deny" or deny_challenges:
             return self._deny(use_json)
         return self._challenge(difficulty, request, use_json)
 
@@ -340,21 +370,7 @@ class Vouch:
         @wraps(view)
         def wrapper(*args, **kwargs):
             req = _to_request()
-            override = Vouch(engine=self.engine)
-            override._engine = Engine(
-                secret=self.engine.secret,
-                policy=Policy(
-                    rules=[Rule(name="always_challenge", action="challenge")],
-                    challenge_handler=self.engine.policy.challenge_handler,
-                    cookie_name=self.engine.policy.cookie_name,
-                    verify_path=self.engine.policy.verify_path,
-                    cookie_ttl=self.engine.policy.cookie_ttl,
-                    challenge_ttl=self.engine.policy.challenge_ttl,
-                ),
-            )
-            override._engine.store = self.engine.store
-            override._engine._rate_limiter = self.engine._rate_limiter
-            result = override.process_request(req)
+            result = self.process_request(req, force="challenge")
             if result:
                 return _to_response(result)
             flask.g.vouch = req.get("_claims")
@@ -369,15 +385,10 @@ class Vouch:
         @wraps(view)
         def wrapper(*args, **kwargs):
             req = _to_request()
-            use_json = self._is_json(req)
-            cookie = req["cookies"].get(self.engine.policy.cookie_name)
-            if cookie and self.engine.check_cookie(cookie, req):
-                flask.g.vouch = req.get("_claims")
-                return view(*args, **kwargs)
-            action, _, _ = self.engine.policy.evaluate(req, self.engine.blocklist)
-            if action != "allow":
-                return _to_response(self._deny(use_json))
-            flask.g.vouch = None
+            result = self.process_request(req, deny_challenges=True)
+            if result:
+                return _to_response(result)
+            flask.g.vouch = req.get("_claims")
             return view(*args, **kwargs)
 
         wrapper._vouch_exempt = True  # type: ignore[attr-defined]

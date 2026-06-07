@@ -93,10 +93,6 @@ def solve_pow(challenge):
     raise RuntimeError("unsolvable")
 
 
-def test_version():
-    assert __version__ == "1.0.0"
-
-
 # --- JWT ---
 
 
@@ -376,7 +372,7 @@ class TestBouncerBase:
             )
         )
         assert result is not None and result.status == 302
-        cookie_val = result.headers["Set-Cookie"].split("=", 1)[1].split(";")[0]
+        cookie_val = result.cookie["value"]
         assert (
             bouncer.process_request(make_request(cookies={COOKIE_NAME: cookie_val}))
             is None
@@ -408,7 +404,7 @@ class TestBouncerBase:
         )
         assert result is not None and result.status == 302
         assert result.headers["Location"] == "/ok"
-        assert COOKIE_NAME in result.headers["Set-Cookie"]
+        assert result.cookie["key"] == COOKIE_NAME
 
     def test_html_verify_failure(self):
         bouncer = self.make_bouncer()
@@ -433,7 +429,7 @@ class TestBouncerBase:
             )
         )
         assert first is not None and first.status == 302
-        token = first.headers["Set-Cookie"].split("=", 1)[1].split(";")[0]
+        token = first.cookie["value"]
         result = bouncer.process_request(
             make_request(
                 method="POST",
