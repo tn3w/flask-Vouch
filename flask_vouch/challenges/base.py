@@ -18,6 +18,7 @@ class ChallengeType(str, Enum):
     ROTATION_CAPTCHA = "rotation-captcha"
     TRACE_CAPTCHA = "trace-captcha"
     CHAIN_CAPTCHA = "chain-captcha"
+    QUIRK_PROBE = "quirk-probe"
 
 
 DIFFICULTY_OFFSETS: dict[ChallengeType, int] = {
@@ -34,6 +35,7 @@ DIFFICULTY_OFFSETS: dict[ChallengeType, int] = {
     ChallengeType.ROTATION_CAPTCHA: -4,
     ChallengeType.TRACE_CAPTCHA: -4,
     ChallengeType.CHAIN_CAPTCHA: 0,
+    ChallengeType.QUIRK_PROBE: 0,
 }
 
 

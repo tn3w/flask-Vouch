@@ -1,0 +1,345 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <meta name="robots" content="noindex" />
+        <title>Verifying</title>
+        <style>
+            :root {
+                --bg: #f5f5f5;
+                --text: #111;
+                --surface: #ddd;
+                --muted: #777;
+                --link: #555;
+                --error: #c00;
+                --accent: {{ACCENT_COLOR}};
+            }
+            @media (prefers-color-scheme: dark) {
+                :root {
+                    --bg: #0a0a0a;
+                    --text: #e0e0e0;
+                    --surface: #222;
+                    --muted: #555;
+                    --link: #777;
+                    --error: #f55;
+                }
+            }
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            body {
+                font-family: system-ui, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                height: 100vh;
+                background: var(--bg);
+                color: var(--text);
+            }
+            .box {
+                text-align: center;
+                max-width: 420px;
+                padding: 2rem;
+            }
+            h2 {
+                margin-bottom: 1rem;
+                font-weight: 500;
+            }
+            #status {
+                color: var(--muted);
+                margin-bottom: 1.5rem;
+                font-size: 0.9rem;
+            }
+            .bar {
+                width: 100%;
+                height: 4px;
+                background: var(--surface);
+                border-radius: 2px;
+                overflow: hidden;
+            }
+            .fill {
+                height: 100%;
+                background: var(--accent);
+                width: 0;
+                transition: width 0.3s;
+            }
+            #probe {
+                position: absolute;
+                left: -9999px;
+                top: -9999px;
+                visibility: hidden;
+            }
+            #reflow {
+                position: absolute;
+                left: -9999px;
+                top: -9999px;
+                font: 16px serif;
+                white-space: nowrap;
+            }
+            noscript {
+                color: var(--error);
+                display: block;
+                margin-top: 1rem;
+            }
+            .branding {
+                margin-top: 1.5rem;
+                font-size: 0.7rem;
+                color: var(--muted);
+            }
+            .branding a {
+                color: var(--link);
+                text-decoration: none;
+            }
+            .branding a:hover {
+                text-decoration: underline;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="box">
+            <h2>Checking your browser</h2>
+            <p id="status">Starting challenge&#8230;</p>
+            <div class="bar"><div class="fill" id="bar"></div></div>
+            <noscript>JavaScript is required.</noscript>
+            {{BRANDING}}
+        </div>
+        <div id="probe">
+            <span id="glyph"></span>
+            <svg width="200" height="40" xmlns="http://www.w3.org/2000/svg">
+                <text id="svgText" x="0" y="20" font-size="16">x</text>
+            </svg>
+        </div>
+        <div id="reflow"></div>
+        <canvas id="canvas" width="200" height="64" style="display:none"></canvas>
+        <script>
+            (function () {
+                var C = JSON.parse('{{CHALLENGE_DATA}}');
+                var status = document.getElementById('status');
+                var bar = document.getElementById('bar');
+
+                function setError(msg) {
+                    status.textContent = 'Verification failed: ' + msg;
+                    status.style.color = 'var(--error)';
+                }
+
+                function measureText(code) {
+                    var glyph = document.getElementById('glyph');
+                    glyph.textContent = String.fromCharCode(code) + 'Wmg';
+                    glyph.style.font = '32px serif';
+                    var report = {
+                        measure: null,
+                        bbox: null,
+                        offset: null,
+                        computed: null,
+                    };
+                    try {
+                        var canvas = document.getElementById('canvas');
+                        var ctx = canvas.getContext('2d');
+                        ctx.font = '32px serif';
+                        report.measure = ctx.measureText(glyph.textContent).width;
+                    } catch (e) {}
+                    try {
+                        var svgText = document.getElementById('svgText');
+                        svgText.textContent = glyph.textContent;
+                        svgText.style.fontSize = '32px';
+                        report.bbox = svgText.getBBox().width;
+                    } catch (e) {}
+                    try {
+                        report.offset = glyph.getBoundingClientRect().width;
+                    } catch (e) {}
+                    try {
+                        var range = document.createRange();
+                        range.selectNodeContents(glyph);
+                        report.computed = range.getBoundingClientRect().width;
+                    } catch (e) {}
+                    return report;
+                }
+
+                function measureReflow() {
+                    var el = document.getElementById('reflow');
+                    el.textContent = 'reflow probe text content';
+                    el.style.fontSize = '8px';
+                    var narrow = el.getBoundingClientRect().width;
+                    el.style.fontSize = '32px';
+                    var wide = el.getBoundingClientRect().width;
+                    return { narrow: narrow, wide: wide };
+                }
+
+                function renderRecipe(recipe) {
+                    var result = {
+                        supported: false,
+                        antialiased: false,
+                        alphaBlended: false,
+                        blank: true,
+                        distinctColors: 0,
+                        seedMatched: false,
+                    };
+                    var canvas = document.getElementById('canvas');
+                    var ctx;
+                    try {
+                        ctx = canvas.getContext('2d');
+                    } catch (e) {
+                        return result;
+                    }
+                    if (!ctx) return result;
+                    result.supported = true;
+
+                    ctx.clearRect(0, 0, 200, 64);
+                    recipe.shapes.forEach(function (s) {
+                        ctx.beginPath();
+                        ctx.fillStyle =
+                            'hsla(' + s.hue + ',70%,50%,' + s.alpha + ')';
+                        ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
+                        ctx.fill();
+                    });
+                    ctx.fillStyle = 'rgba(0,0,0,0.9)';
+                    ctx.font = '28px serif';
+                    ctx.fillText(String.fromCharCode(recipe.glyphCode), 4, 48);
+
+                    var data;
+                    try {
+                        data = ctx.getImageData(0, 0, 200, 64).data;
+                    } catch (e) {
+                        return result;
+                    }
+
+                    var colors = {};
+                    var partialAlpha = 0;
+                    var edgeMix = 0;
+                    var nonBlank = 0;
+                    var prev = -1;
+                    for (var i = 0; i < data.length; i += 4) {
+                        var r = data[i],
+                            g = data[i + 1],
+                            b = data[i + 2],
+                            a = data[i + 3];
+                        if (r || g || b || a !== 255) nonBlank++;
+                        if (a > 0 && a < 255) partialAlpha++;
+                        var key = (r >> 4) + ',' + (g >> 4) + ',' + (b >> 4);
+                        colors[key] = 1;
+                        var lum = r + g + b;
+                        if (prev >= 0 && lum !== prev && lum !== 0 && prev !== 0) {
+                            edgeMix++;
+                        }
+                        prev = lum;
+                    }
+                    result.blank = nonBlank < 20;
+                    result.alphaBlended = partialAlpha > 10;
+                    result.antialiased = edgeMix > 30;
+                    result.distinctColors = Object.keys(colors).length;
+                    result.seedMatched = result.distinctColors >= recipe.shapes.length;
+                    return result;
+                }
+
+                function measureCompositor(done) {
+                    var order = [];
+                    Promise.resolve().then(function () {
+                        order.push('micro');
+                    });
+                    order.push('sync');
+                    var raf = globalThis.requestAnimationFrame;
+                    if (!raf) {
+                        done({
+                            rafFired: false,
+                            interval: null,
+                            microtaskOrder: order[0] === 'sync',
+                        });
+                        return;
+                    }
+                    var t0 = performance.now();
+                    var settled = false;
+                    raf(function () {
+                        raf(function () {
+                            if (settled) return;
+                            settled = true;
+                            done({
+                                rafFired: true,
+                                interval: performance.now() - t0,
+                                microtaskOrder:
+                                    order[0] === 'sync' && order[1] === 'micro',
+                            });
+                        });
+                    });
+                    setTimeout(function () {
+                        if (settled) return;
+                        settled = true;
+                        done({
+                            rafFired: false,
+                            interval: null,
+                            microtaskOrder: order[0] === 'sync',
+                        });
+                    }, 1000);
+                }
+
+                function collect(recipe, done) {
+                    bar.style.width = '40%';
+                    var report = {
+                        textMetrics: measureText(recipe.glyphCode),
+                        reflow: measureReflow(),
+                        render: renderRecipe(recipe),
+                    };
+                    bar.style.width = '70%';
+                    measureCompositor(function (comp) {
+                        report.compositor = comp;
+                        done(report);
+                    });
+                }
+
+                function submit(token) {
+                    bar.style.width = '100%';
+                    status.textContent = 'Verified!';
+                    var f = document.createElement('form');
+                    f.method = 'POST';
+                    f.action = C.verifyPath;
+                    [
+                        ['id', C.id],
+                        ['nonce', token],
+                        ['redirect', C.redirect],
+                        ['csrf_token', C.csrfToken],
+                    ].forEach(function (p) {
+                        var inp = document.createElement('input');
+                        inp.type = 'hidden';
+                        inp.name = p[0];
+                        inp.value = p[1];
+                        f.appendChild(inp);
+                    });
+                    document.body.appendChild(f);
+                    f.submit();
+                }
+
+                function post(body) {
+                    return fetch(C.verifyPath, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    }).then(function (r) {
+                        return r.json();
+                    });
+                }
+
+                status.textContent = 'Probing browser engine…';
+                bar.style.width = '15%';
+                post({ id: C.id, init: true })
+                    .then(function (msg) {
+                        if (msg.type !== 'recipe') throw new Error(msg.reason || 'init');
+                        collect(msg.recipe, function (report) {
+                            post({ id: C.id, nonce: msg.nonce, report: report })
+                                .then(function (res) {
+                                    if (res.type === 'result') submit(res.token);
+                                    else setError(res.reason || 'rejected');
+                                })
+                                .catch(function () {
+                                    setError('connection error');
+                                });
+                        });
+                    })
+                    .catch(function (e) {
+                        setError(e.message || 'connection error');
+                    });
+            })();
+        </script>
+    </body>
+</html>

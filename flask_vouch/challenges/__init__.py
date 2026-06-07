@@ -7,6 +7,7 @@ from .cup_captcha import CupCaptcha
 from .image_captcha import ImageCaptcha
 from .image_grid_captcha import ImageGridCaptcha
 from .navigator_attestation import NavigatorAttestation, validate_signals
+from .quirk_probe import QuirkProbe
 from .rotation_captcha import RotationCaptcha
 from .sha256 import SHA256
 from .sha256_balloon import SHA256Balloon
@@ -26,6 +27,7 @@ __all__ = [
     "ImageCaptcha",
     "ImageGridCaptcha",
     "NavigatorAttestation",
+    "QuirkProbe",
     "RotationCaptcha",
     "SHA256Balloon",
     "SHA256",

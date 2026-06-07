@@ -93,6 +93,7 @@ Pass as kwargs or via `app.config` with the `VOUCH_` prefix:
 | `json_mode`         | `False`              | Return JSON challenge instead of HTML  |
 | `cookie_name`       | `_tollbooth`         | Access cookie name                     |
 | `cookie_ttl`        | `604800`             | Cookie lifetime in seconds (7 days)    |
+| `cookie_secure`     | `True`               | `Secure` flag; only set over HTTPS     |
 | `verify_path`       | `/.tollbooth/verify` | Challenge verification endpoint        |
 | `challenge_handler` | `SHA256Balloon`      | Challenge implementation               |
 | `blocklist`         | `None`               | `NetSet` instance or list of them      |
@@ -168,6 +169,7 @@ from flask_vouch import (
     ImageGridCaptcha,           # image grid CAPTCHA        (requires [image])
     AudioCaptcha,               # audio CAPTCHA             (requires [audio])
     NavigatorAttestation,       # browser signal attestation
+    QuirkProbe,                 # browser-engine quirk verification
     ThirdPartyCaptchaChallenge, # embed external CAPTCHAs
 )
 
