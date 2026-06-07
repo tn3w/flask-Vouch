@@ -157,6 +157,7 @@ Rule fields:
 from flask_vouch import (
     SHA256Balloon,              # default, proof of work    (SHA-256 balloon hashing)
     SHA256,                     # lightweight SHA-256 PoW
+    ChainCaptcha,               # no-interaction iterated-SHA-256 PoW
     CharacterCaptcha,           # text CAPTCHA
     ImageCaptcha,               # image CAPTCHA             (requires [image])
     RotationCaptcha,            # rotation CAPTCHA          (requires [image])

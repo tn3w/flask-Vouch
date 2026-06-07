@@ -17,6 +17,7 @@ class ChallengeType(str, Enum):
     AUDIO_CAPTCHA = "audio-captcha"
     ROTATION_CAPTCHA = "rotation-captcha"
     TRACE_CAPTCHA = "trace-captcha"
+    CHAIN_CAPTCHA = "chain-captcha"
 
 
 DIFFICULTY_OFFSETS: dict[ChallengeType, int] = {
@@ -32,6 +33,7 @@ DIFFICULTY_OFFSETS: dict[ChallengeType, int] = {
     ChallengeType.AUDIO_CAPTCHA: -4,
     ChallengeType.ROTATION_CAPTCHA: -4,
     ChallengeType.TRACE_CAPTCHA: -4,
+    ChallengeType.CHAIN_CAPTCHA: 0,
 }
 
 

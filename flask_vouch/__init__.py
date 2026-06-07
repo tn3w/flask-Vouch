@@ -2,6 +2,7 @@ from flask_vouch.netset import NetSet
 from flask_vouch.challenges import (
     SHA256,
     AudioCaptcha,
+    ChainCaptcha,
     ChallengeType,
     CharacterCaptcha,
     CircleCaptcha,
@@ -41,6 +42,7 @@ __all__ = [
     "Vouch",
     "VouchKwargs",
     "AudioCaptcha",
+    "ChainCaptcha",
     "ChallengeType",
     "Engine",
     "EngineKwargs",
