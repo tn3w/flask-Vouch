@@ -8,6 +8,7 @@ from pathlib import Path
 
 from flask_vouch.challenges import (
     SHA256,
+    ChainCaptcha,
     AudioCaptcha,
     ChallengeBase,
     CharacterCaptcha,
@@ -44,6 +45,7 @@ SCOPE_IDS = ["status", "bar", "rounds"]
 HANDLERS = [
     ("SHA-256 Balloon", "sha256-balloon", SHA256Balloon(), "sha256_balloon"),
     ("SHA-256 PoW", "sha256", SHA256(), "sha256"),
+    ("Chain CAPTCHA", "chain-captcha", ChainCaptcha(), "chain_captcha"),
     ("Character CAPTCHA", "character-captcha", CharacterCaptcha(), "character_captcha"),
     ("Image CAPTCHA", "image-captcha", ImageCaptcha(), "image_captcha"),
     ("Rotation CAPTCHA", "rotation-captcha", RotationCaptcha(), "rotation_captcha"),
