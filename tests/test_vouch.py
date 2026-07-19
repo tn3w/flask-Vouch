@@ -508,6 +508,47 @@ class TestFlask:
             assert resp.status_code == 200
             assert resp.data == b"public"
 
+    def make_static_app(self, tmp_path):
+        (tmp_path / "app.css").write_text("body{}")
+        app = flask.Flask(
+            __name__, static_folder=str(tmp_path), static_url_path="/static"
+        )
+        app.config["TESTING"] = True
+        blueprint = flask.Blueprint(
+            "admin",
+            __name__,
+            static_folder=str(tmp_path),
+            static_url_path="/static",
+            url_prefix="/admin",
+        )
+        app.register_blueprint(blueprint)
+        return app, Vouch(app, secret=SECRET, policy=challenge_policy())
+
+    def test_exempt_endpoint_name(self, tmp_path):
+        app, bouncer = self.make_static_app(tmp_path)
+        bouncer.exempt("static")
+        with app.test_client() as c:
+            assert c.get("/static/app.css").data == b"body{}"
+            assert c.get("/admin/static/app.css").data != b"body{}"
+
+    def test_exempt_blueprint_static(self, tmp_path):
+        app, bouncer = self.make_static_app(tmp_path)
+        bouncer.exempt("admin.static")
+        with app.test_client() as c:
+            assert c.get("/admin/static/app.css").data == b"body{}"
+
+    def test_exempt_endpoint_before_init_app(self, tmp_path):
+        (tmp_path / "app.css").write_text("body{}")
+        app = flask.Flask(
+            __name__, static_folder=str(tmp_path), static_url_path="/static"
+        )
+        app.config["TESTING"] = True
+        bouncer = Vouch(secret=SECRET, policy=challenge_policy())
+        bouncer.exempt("static")
+        bouncer.init_app(app)
+        with app.test_client() as c:
+            assert c.get("/static/app.css").data == b"body{}"
+
     def test_denies_bad_bot(self):
         app, _ = self.make_app(policy=deny_policy())
         with app.test_client() as c:

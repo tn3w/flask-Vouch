@@ -112,6 +112,9 @@ app.config["VOUCH_COOKIE_TTL"] = 3600
 | `@vouch.challenge` | Always issue a challenge regardless of policy             |
 | `@vouch.block`     | Deny detected crawlers outright; challenge or pass others |
 
+`exempt` also takes an endpoint name, `vouch.exempt("static")` for static files,
+`vouch.exempt("admin.static")` for a blueprint's.
+
 ## Custom rules
 
 ```python
@@ -235,12 +238,16 @@ eh.init_flask(app)
 from flask_vouch.extras import RateLimiter
 
 rl = RateLimiter(default="100/minute")
+rl.exempt("static")
 rl.init_flask(app)
 
 @app.route("/login")
 @rl.limit("5/minute")
 def login(): ...
 ```
+
+`init_flask` buckets per endpoint, so every asset on a page shares one `static`
+budget — exempt it unless you want asset-heavy browsing to hit 429.
 
 ### ThirdPartyCaptcha
 

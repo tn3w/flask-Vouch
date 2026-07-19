@@ -91,6 +91,7 @@ class RateLimiter:
 
     Usage — Flask global::
 
+        rl.exempt("static")
         rl.init_flask(app, rate="200/minute")
     """
 
@@ -102,6 +103,7 @@ class RateLimiter:
         prefix: str = "fbrl",
     ):
         self._default = _parse_rate(default)
+        self._exempt_endpoints: set[str] = set()
         self._store = (
             _RedisStore(redis_client, prefix)
             if redis_client
@@ -135,6 +137,13 @@ class RateLimiter:
         return decorator
 
     def exempt(self, func):
+        """Decorator, or endpoint name, that skips rate limiting.
+
+        ``rl.exempt("static")`` keeps asset requests from consuming the budget.
+        """
+        if isinstance(func, str):
+            self._exempt_endpoints.add(func)
+            return func
         func._rl_exempt = True
         return func
 
@@ -145,6 +154,9 @@ class RateLimiter:
         @app.before_request
         def _check():
             from flask import Response, request
+
+            if request.endpoint in self._exempt_endpoints:
+                return None
 
             view = app.view_functions.get(request.endpoint)
             if view and getattr(view, "_rl_exempt", False):

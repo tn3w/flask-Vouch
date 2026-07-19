@@ -491,6 +491,27 @@ class TestRateLimiter:
             assert rl.hit("k", 2, 60)
             assert rl.hit("k", 2, 60)
 
+    def test_exempt_endpoint_skips_limit(self, tmp_path):
+        from flask_vouch.extras.rate_limiter import RateLimiter as FlaskRateLimiter
+
+        (tmp_path / "app.css").write_text("body{}")
+        app = flask.Flask(
+            __name__, static_folder=str(tmp_path), static_url_path="/static"
+        )
+        limiter = FlaskRateLimiter()
+        limiter.exempt("static")
+        limiter.init_flask(app, rate="1/minute")
+
+        @app.route("/")
+        def index():
+            return "OK"
+
+        with app.test_client() as c:
+            for _ in range(3):
+                assert c.get("/static/app.css").status_code == 200
+            assert c.get("/").status_code == 200
+            assert c.get("/").status_code == 429
+
 
 # --- TokenTracker ---
 

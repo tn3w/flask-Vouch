@@ -123,6 +123,7 @@ class Vouch:
         json_mode = kwargs.pop("json_mode", False)
         self._excludes = [re.compile(p) for p in (exclude or [])]
         self._json_mode = json_mode
+        self._exempt_endpoints: set[str] = set()
         self._engine: Engine | None = None
 
         secret = kwargs.get("secret")
@@ -333,6 +334,9 @@ class Vouch:
 
     def _check(self):
         endpoint = flask.request.endpoint
+        if endpoint in self._exempt_endpoints:
+            return None
+
         view = flask.current_app.view_functions.get(endpoint) if endpoint else None
         if view and getattr(view, "_vouch_exempt", False):
             return None
@@ -345,7 +349,14 @@ class Vouch:
         return None
 
     def exempt(self, view):
-        """Decorator: skip bouncer check for this route."""
+        """Decorator, or endpoint name, that skips the bouncer check.
+
+        ``vouch.exempt("static")`` covers Flask's static files;
+        ``vouch.exempt("admin.static")`` covers a blueprint's.
+        """
+        if isinstance(view, str):
+            self._exempt_endpoints.add(view)
+            return view
         view._vouch_exempt = True
         return view
 
