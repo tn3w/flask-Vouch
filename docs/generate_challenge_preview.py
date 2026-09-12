@@ -1,6 +1,5 @@
-"""Generate docs/index-build.html with live challenge previews injected."""
+"""Build docs/index-build.html with a live preview of every challenge page."""
 
-import json
 import re
 import secrets
 import time
@@ -8,68 +7,64 @@ from pathlib import Path
 
 from flask_vouch.challenges import (
     SHA256,
-    ChainCaptcha,
     AudioCaptcha,
+    ChainCaptcha,
     ChallengeBase,
+    ChallengeHandler,
     CharacterCaptcha,
     CircleCaptcha,
     CupCaptcha,
     ImageCaptcha,
     ImageGridCaptcha,
     NavigatorAttestation,
+    QuirkProbe,
     RotationCaptcha,
     SHA256Balloon,
     SlidingCaptcha,
     TraceCaptcha,
 )
+from flask_vouch.rendering import render_challenge
 
-SECRET = "preview-secret-key"
 DIFFICULTY = 10
+ACCENT_COLOR = "#b85c00"
 VERIFY_PATH = "/"
 REDIRECT = "/"
 
-FAKE_REQUEST = {
-    "method": "GET",
-    "path": "/",
-    "query": "",
-    "user_agent": "Mozilla/5.0 (X11; Linux x86_64) AppleWebKit/537.36",
-    "remote_addr": "127.0.0.1",
-    "headers": {},
-    "cookies": {},
-    "form": {},
-}
+DOCS_DIR = Path(__file__).parent
+PLACEHOLDER = "<!-- CHALLENGE_PREVIEWS_PLACEHOLDER -->"
 
-# Element IDs that appear in multiple challenge templates and must be scoped.
-SCOPE_IDS = ["status", "bar", "rounds"]
-
-HANDLERS = [
-    ("SHA-256 Balloon", "sha256-balloon", SHA256Balloon(), "sha256_balloon"),
-    ("SHA-256 PoW", "sha256", SHA256(), "sha256"),
-    ("Chain CAPTCHA", "chain-captcha", ChainCaptcha(), "chain_captcha"),
-    ("Character CAPTCHA", "character-captcha", CharacterCaptcha(), "character_captcha"),
-    ("Image CAPTCHA", "image-captcha", ImageCaptcha(), "image_captcha"),
-    ("Rotation CAPTCHA", "rotation-captcha", RotationCaptcha(), "rotation_captcha"),
-    ("Cup CAPTCHA", "cup-captcha", CupCaptcha(), "cup_captcha"),
-    ("Sliding CAPTCHA", "sliding-captcha", SlidingCaptcha(), "sliding_captcha"),
-    ("Circle CAPTCHA", "circle-captcha", CircleCaptcha(), "circle_captcha"),
-    ("Trace CAPTCHA", "trace-captcha", TraceCaptcha(), "trace_captcha"),
-    (
-        "Image Grid CAPTCHA",
-        "image-grid-captcha",
-        ImageGridCaptcha(),
-        "image_grid_captcha",
-    ),
-    ("Audio CAPTCHA", "audio-captcha", AudioCaptcha(), "audio_captcha"),
-    (
-        "Navigator Attestation",
-        "navigator-attestation",
-        NavigatorAttestation(),
-        "navigator_attestation",
-    ),
+HANDLERS: list[ChallengeHandler] = [
+    SHA256Balloon(),
+    SHA256(),
+    ChainCaptcha(),
+    CharacterCaptcha(),
+    ImageCaptcha(),
+    RotationCaptcha(),
+    CupCaptcha(),
+    SlidingCaptcha(),
+    CircleCaptcha(),
+    TraceCaptcha(),
+    ImageGridCaptcha(),
+    AudioCaptcha(),
+    NavigatorAttestation(),
+    QuirkProbe(),
 ]
 
+LABELS = {
+    "sha256-balloon": "SHA-256 Balloon",
+    "sha256": "SHA-256 PoW",
+    "navigator-attestation": "Navigator Attestation",
+    "quirk-probe": "Quirk Probe",
+}
 
-def make_challenge(handler) -> ChallengeBase:
+
+def label_of(slug: str) -> str:
+    return LABELS.get(
+        slug, slug.replace("-", " ").title().replace("Captcha", "CAPTCHA")
+    )
+
+
+def make_challenge(handler: ChallengeHandler) -> ChallengeBase:
     difficulty = handler.to_difficulty(DIFFICULTY)
     return ChallengeBase(
         id=secrets.token_urlsafe(24),
@@ -81,114 +76,95 @@ def make_challenge(handler) -> ChallengeBase:
     )
 
 
-def render_challenge_html(handler, challenge) -> str:
-    payload = handler.render_payload(challenge, VERIFY_PATH, REDIRECT)
-    payload["csrfToken"] = "preview-csrf-token"
-    payload_json = json.dumps(payload)
-    safe = (
-        payload_json.replace("'", "\\u0027")
-        .replace("<", "\\u003c")
-        .replace(">", "\\u003e")
+def render(handler: ChallengeHandler) -> str:
+    return render_challenge(
+        handler,
+        make_challenge(handler),
+        VERIFY_PATH,
+        REDIRECT,
+        accent_color=ACCENT_COLOR,
+        branding=False,
     )
-    html = (
-        handler.template.replace("{{CHALLENGE_DATA}}", safe)
-        .replace("{{BRANDING}}", "")
-        .replace("{{ERROR}}", "")
-        .replace("{{ACCENT_COLOR}}", "#b85c00")
-    )
-    for key, value in payload.items():
-        html = html.replace(f"{{{{{key}}}}}", str(value))
-    return html
 
 
-def extract_body_and_scripts(full_html: str) -> tuple[str, str]:
-    """Extract body content and scripts, remove redirects."""
-    body_match = re.search(
-        r"<body[^>]*>(.*?)</body>", full_html, re.DOTALL | re.IGNORECASE
+def split_body_and_styles(page: str) -> tuple[str, str]:
+    body = re.search(r"<body[^>]*>(.*?)</body>", page, re.DOTALL | re.IGNORECASE)
+    styles = "\n".join(
+        re.findall(r"<style[^>]*>.*?</style>", page, re.DOTALL | re.IGNORECASE)
     )
-    body = body_match.group(1).strip() if body_match else full_html
-
-    style_blocks = re.findall(
-        r"<style[^>]*>.*?</style>", full_html, re.DOTALL | re.IGNORECASE
+    return (
+        body.group(1).strip() if body else page,
+        re.sub(r"body\s*\{[^}]*\}", "", styles, flags=re.DOTALL),
     )
-    styles = "\n".join(style_blocks)
 
-    styles = re.sub(r"body\s*\{[^}]*\}", "", styles, flags=re.DOTALL)
+
+def drop_reload_button(body: str) -> str:
+    pattern = (
+        r'<(?:button|a)[^>]+class=["\'][^"\']*reload-btn[^"\']*["\'][^>]*>'
+        r".*?</(?:button|a)>"
+    )
+    return re.sub(pattern, "", body, flags=re.DOTALL | re.IGNORECASE)
+
+
+def scope_ids(slug: str, body: str, styles: str) -> tuple[str, str]:
+    """Prefix every element id with the panel slug.
+
+    All panels live in one document, and several challenge pages reuse ids like
+    ``status`` or ``sheet-a``, so both the markup and anything pointing at it -
+    ``getElementById`` calls and ``#id`` style rules - are rewritten per panel.
+    """
+    names = set(re.findall(r'id="([A-Za-z][\w-]*)"', body))
+
+    for name in sorted(names, key=len, reverse=True):
+        scoped = f"{slug}-{name}"
+        body = body.replace(f'id="{name}"', f'id="{scoped}"')
+        for quote in ("'", '"'):
+            body = body.replace(
+                f"getElementById({quote}{name}{quote})",
+                f"getElementById({quote}{scoped}{quote})",
+            )
+        styles = re.sub(rf"#{re.escape(name)}(?![\w-])", f"#{scoped}", styles)
 
     return body, styles
 
 
-def remove_reload_btn(body: str) -> str:
-    """Strip reload/new-challenge buttons from preview panels."""
-    body = re.sub(
-        r'<(?:button|a)[^>]+class=["\'][^"\']*reload-btn[^"\']*["\'][^>]*>.*?</(?:button|a)>',
-        "",
-        body,
-        flags=re.DOTALL | re.IGNORECASE,
-    )
-    return body
+def make_restartable(slug: str, body: str) -> str:
+    """Turn a proof-of-work page's auto-running IIFE into a function the tabs can call.
 
-
-def scope_panel(slug: str, body: str) -> str:
-    """Prefix shared element IDs with the panel slug to avoid cross-panel conflicts."""
-    for eid in SCOPE_IDS:
-        body = body.replace(f'id="{eid}"', f'id="{slug}-{eid}"')
-        body = body.replace(
-            f"getElementById('{eid}')", f"getElementById('{slug}-{eid}')"
-        )
-        body = body.replace(
-            f'getElementById("{eid}")', f'getElementById("{slug}-{eid}")'
-        )
-    return body
-
-
-def make_pow_restartable(slug: str, body: str) -> str:
-    """Convert a PoW auto-running IIFE into a lazily-called, restartable init function.
-
-    The converted function is stored as ``window.__vouchInits[slug]`` and called by
-    ``showTab`` each time the panel becomes active, so workers restart on every visit.
+    The panel is hidden until its tab is opened, so the workers have to start then
+    instead of on load; ``showTab`` looks the function up in ``window.__vouchInits``.
+    Raises if the page no longer matches the shape this rewrite expects.
     """
     if "var workerSrc" not in body:
-        return body  # not a PoW challenge
+        return body
 
-    # Replace IIFE opening with a named init function stored globally.
-    body = re.sub(
-        r"\(function\s*\(\)\s*\{",
-        (
-            "window.__vouchInits = window.__vouchInits || {};\n"
-            f"                window.__vouchInits['{slug}'] = function () {{"
-        ),
-        body,
-        count=1,
+    opener = re.search(r"\(function\s*\(\)\s*\{", body)
+    closings = list(re.finditer(r"\}\)\(\);", body))
+    if not opener or not closings or "var workers = [];" not in body:
+        raise RuntimeError(f"{slug}: proof-of-work page no longer matches the rewrite")
+
+    # The first opener and the last `})();` are the outer IIFE; inner ones are handlers.
+    closing = closings[-1]
+    body = (
+        body[: opener.start()]
+        + "window.__vouchInits = window.__vouchInits || {};\n"
+        + f"                window.__vouchInits['{slug}'] = function () {{"
+        + body[opener.end() : closing.start()]
+        + "};"
+        + body[closing.end() :]
     )
-    # Remove the auto-invocation (the LAST })(); is the outer IIFE close).
-    # count=1 would match the inner w.onmessage = (function(){...})(); instead.
-    last = list(re.finditer(r"\}\)\(\);", body))[-1]
-    body = body[: last.start()] + "};" + body[last.end() :]
-    # Expose the workers array globally so showTab can terminate them on tab switch.
-    body = body.replace(
+    return body.replace(
         "var workers = [];",
         "var workers = []; window.__vouchCurrentWorkers = workers;",
     )
-    return body
 
 
-def build_challenge_section(
-    rendered_challenges: list[tuple[str, str, str, str]],
-) -> str:
-    nav_items = "".join(
-        f'<button class="tab-btn" data-tab="{slug}" onclick="showTab(\'{slug}\')">'
-        f"{label}</button>"
-        for label, slug, _, _ in rendered_challenges
-    )
-
-    panels = ""
-    for i, (label, slug, body, styles) in enumerate(rendered_challenges):
-        active = " active" if i == 0 else ""
-        body = remove_reload_btn(body)
-        body = scope_panel(slug, body)
-        body = make_pow_restartable(slug, body)
-        panels += f"""
+def build_panel(index: int, slug: str, page: str) -> str:
+    body, styles = split_body_and_styles(page)
+    body, styles = scope_ids(slug, drop_reload_button(body), styles)
+    body = make_restartable(slug, body)
+    active = " active" if index == 0 else ""
+    return f"""
 <div class="tab-panel{active}" id="panel-{slug}">
     <style>{styles}</style>
     <div class="challenge-wrap">
@@ -196,65 +172,71 @@ def build_challenge_section(
     </div>
 </div>"""
 
-    first_slug = rendered_challenges[0][1] if rendered_challenges else ""
 
-    return f"""<div class="detector">
+def build_section(previews: list[tuple[str, str]]) -> str:
+    tabs = "".join(
+        f'<button class="tab-btn" data-tab="{slug}" onclick="showTab(\'{slug}\')">'
+        f"{label_of(slug)}</button>"
+        for slug, _ in previews
+    )
+    panels = "".join(
+        build_panel(index, slug, page) for index, (slug, page) in enumerate(previews)
+    )
+    first = previews[0][0] if previews else ""
+
+    section = f"""<div class="detector">
                     <div class="detector-header">
                         <span class="detector-title">Challenge Previews</span>
                     </div>
                     <div class="tabs" id="tabs">
-                        {nav_items}
+                        {tabs}
                     </div>
                     {panels}
                 </div>
                 <script>
                     function showTab(slug) {{
-                        // Terminate any running PoW workers from the previous tab.
-                        if (window.__vouchCurrentWorkers && window.__vouchCurrentWorkers.length) {{
-                            window.__vouchCurrentWorkers.forEach(function(w) {{
-                                try {{ w.terminate(); }} catch(e) {{}}
-                            }});
-                            window.__vouchCurrentWorkers = [];
-                        }}
-                        document.querySelectorAll('.tab-panel').forEach(p => p.classList.remove('active'));
-                        document.querySelectorAll('.tab-btn').forEach(b => b.classList.remove('active'));
-                        const panel = document.getElementById('panel-' + slug);
+                        var running = window.__vouchCurrentWorkers || [];
+                        running.forEach(function (w) {{
+                            try {{ w.terminate(); }} catch (e) {{}}
+                        }});
+                        window.__vouchCurrentWorkers = [];
+                        document.querySelectorAll('.tab-panel').forEach(function (p) {{
+                            p.classList.remove('active');
+                        }});
+                        document.querySelectorAll('.tab-btn').forEach(function (b) {{
+                            b.classList.remove('active');
+                        }});
+                        var panel = document.getElementById('panel-' + slug);
                         if (panel) panel.classList.add('active');
-                        document.querySelectorAll('.tab-btn[data-tab="' + slug + '"]').forEach(b => b.classList.add('active'));
-                        // Restart the challenge if this panel has an init function (PoW panels).
-                        if (window.__vouchInits && window.__vouchInits[slug]) {{
-                            window.__vouchInits[slug]();
-                        }}
+                        var selector = '.tab-btn[data-tab="' + slug + '"]';
+                        document.querySelectorAll(selector).forEach(function (b) {{
+                            b.classList.add('active');
+                        }});
+                        var init = (window.__vouchInits || {{}})[slug];
+                        if (init) init();
                     }}
-                    showTab('{first_slug}');
-                </script>""".replace("f.submit();", "").replace("POST", "GET")
+                    showTab('{first}');
+                </script>"""
+
+    return section.replace("f.submit();", "").replace("POST", "GET")
 
 
-def main():
-    rendered = []
-    for label, slug, handler, template_name in HANDLERS:
-        print(f"Rendering {label}...")
+def main() -> None:
+    previews = []
+    for handler in HANDLERS:
+        slug = handler.challenge_type.value
         try:
-            challenge = make_challenge(handler)
-            full_html = render_challenge_html(handler, challenge)
-            body, styles = extract_body_and_scripts(full_html)
-            rendered.append((label, slug, body, styles))
-            print(f"  OK")
-        except Exception as exc:
-            print(f"  FAILED: {exc}")
+            previews.append((slug, render(handler)))
+            print(f"rendered {label_of(slug)}")
+        except Exception as error:
+            print(f"skipped {label_of(slug)}: {error}")
 
-    challenge_section = build_challenge_section(rendered)
-
-    index_path = Path(__file__).parent / "index.html"
-    index_html = index_path.read_text(encoding="utf-8")
-
-    index_html = index_html.replace(
-        "<!-- CHALLENGE_PREVIEWS_PLACEHOLDER -->", challenge_section
+    index = (DOCS_DIR / "index.html").read_text(encoding="utf-8")
+    out = DOCS_DIR / "index-build.html"
+    out.write_text(
+        index.replace(PLACEHOLDER, build_section(previews)), encoding="utf-8"
     )
-
-    out = Path(__file__).parent / "index-build.html"
-    out.write_text(index_html, encoding="utf-8")
-    print(f"\nWritten to {out}")
+    print(f"written {out}")
 
 
 if __name__ == "__main__":
