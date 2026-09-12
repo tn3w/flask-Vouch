@@ -72,6 +72,9 @@ omit = [
     "flask_vouch/redis.py",
 ]
 
+[tool.black]
+target-version = ["py39"]
+
 [tool.isort]
 profile = "black"
 
