@@ -247,7 +247,7 @@ def login(): ...
 ```
 
 `init_flask` buckets per endpoint, so every asset on a page shares one `static`
-budget — exempt it unless you want asset-heavy browsing to hit 429.
+budget, exempt it unless you want asset-heavy browsing to hit 429.
 
 ### ThirdPartyCaptcha
 
