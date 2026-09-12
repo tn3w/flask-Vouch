@@ -10,6 +10,7 @@ import flask
 from flask_vouch.engine import (
     Engine,
     EngineKwargs,
+    Request,
     _blocklist_match,
     _challenge_headers,
     _safe_redirect,
@@ -24,12 +25,14 @@ _JSON_CT = {
     "Cache-Control": "no-store",
 }
 
+_RETRY_ERROR = '<p class="error">Incorrect, try again.</p>'
+
 
 class VouchKwargs(EngineKwargs, total=False):
     secret: str | None
     engine: Engine | None
     exclude: list[str] | None
-    json_mode: bool | Callable[[dict], bool]
+    json_mode: bool | Callable[[Request], bool]
 
 
 def _config_kwargs(app_config):
@@ -40,7 +43,7 @@ def _config_kwargs(app_config):
     }
 
 
-def _to_request():
+def _to_request() -> Request:
     r = flask.request
     forwarded = r.headers.get("X-Forwarded-For", "")
     return {
@@ -59,7 +62,7 @@ def _to_request():
     }
 
 
-def _to_response(result):
+def _to_response(result: _Response) -> flask.Response:
     response = flask.Response(
         result.body,
         status=result.status,
@@ -70,20 +73,15 @@ def _to_response(result):
     return response
 
 
-def _crawler_fields(user_agent: str) -> tuple[bool, str | None]:
-    crawling = _is_crawler(user_agent)
-    return crawling, (_crawler_name(user_agent) if crawling else None)
-
-
 def _make_claims(user_agent: str, client_id: str, **overrides) -> types.SimpleNamespace:
-    is_crawler, crawler_name = _crawler_fields(user_agent)
+    crawling = _is_crawler(user_agent)
     return types.SimpleNamespace(
         **{
             "score": None,
             "matched_rule": None,
             "blocklist_match": None,
-            "is_crawler": is_crawler,
-            "crawler_name": crawler_name,
+            "is_crawler": crawling,
+            "crawler_name": _crawler_name(user_agent) if crawling else None,
             "client_id": client_id,
             **overrides,
         }
@@ -91,11 +89,20 @@ def _make_claims(user_agent: str, client_id: str, **overrides) -> types.SimpleNa
 
 
 class _Response:
-    def __init__(self, status: int, headers: dict, body: str, cookie: dict | None = None):
+    def __init__(
+        self, status: int, headers: dict, body: str, cookie: dict | None = None
+    ):
         self.status = status
         self.headers = headers
         self.body = body
         self.cookie = cookie
+
+
+def _error(use_json: bool, status: int, message: str) -> _Response:
+    if use_json:
+        body = json.dumps({"error": message.lower()})
+        return _Response(status, dict(_JSON_CT), body)
+    return _Response(status, {"Content-Type": "text/plain"}, message)
 
 
 class Vouch:
@@ -119,27 +126,24 @@ class Vouch:
 
     def __init__(self, app=None, **kwargs: Unpack[VouchKwargs]):
         self._kwargs = kwargs
-        exclude = kwargs.pop("exclude", None)
-        json_mode = kwargs.pop("json_mode", False)
-        self._excludes = [re.compile(p) for p in (exclude or [])]
-        self._json_mode = json_mode
+        self._excludes: list = []
+        self._json_mode: bool | Callable[[Request], bool] = kwargs.get("json_mode", False)
         self._exempt_endpoints: set[str] = set()
         self._engine: Engine | None = None
 
-        secret = kwargs.get("secret")
-        engine = kwargs.get("engine")
-        if secret or engine:
-            self._engine = engine or Engine(
-                secret=secret,
-                **{
-                    k: v
-                    for k, v in kwargs.items()
-                    if k not in ("secret", "engine", "exclude", "json_mode")
-                },
-            )
+        if kwargs.get("secret") or kwargs.get("engine"):
+            self._configure(dict(kwargs))
 
         if app is not None:
             self.init_app(app)
+
+    def _configure(self, options: dict) -> None:
+        options = dict(options)
+        self._excludes = [re.compile(p) for p in (options.pop("exclude", None) or [])]
+        self._json_mode = options.pop("json_mode", False)
+        engine = options.pop("engine", None)
+        secret = options.pop("secret", None)
+        self._engine = engine or Engine(secret=secret, **options)
 
     @property
     def engine(self) -> Engine:
@@ -149,15 +153,8 @@ class Vouch:
     def init_app(self, app: flask.Flask) -> None:
         if not self._engine:
             merged = {**_config_kwargs(app.config), **self._kwargs}
-            if "secret" not in merged and "engine" not in merged:
-                merged.setdefault("secret", app.config.get("SECRET_KEY"))
-            exclude = merged.pop("exclude", None)
-            json_mode = merged.pop("json_mode", False)
-            engine = merged.pop("engine", None)
-            secret = merged.pop("secret", None)
-            self._excludes = [re.compile(p) for p in (exclude or [])]
-            self._json_mode = json_mode
-            self._engine = engine or Engine(secret=secret, **merged)
+            merged.setdefault("secret", app.config.get("SECRET_KEY"))
+            self._configure(merged)
 
         app.before_request(self._check)
         app.extensions["vouch"] = self
@@ -172,165 +169,161 @@ class Vouch:
     def is_verify(self, method: str, path: str) -> bool:
         return method == "POST" and path == self.verify_path
 
-    def _is_json(self, request) -> bool:
+    def _is_json(self, request: Request) -> bool:
         if callable(self._json_mode):
             return self._json_mode(request)
         return self._json_mode
 
-    def _deny(self, use_json: bool) -> _Response:
-        if use_json:
-            return _Response(403, dict(_JSON_CT), '{"error":"forbidden"}')
-        return _Response(403, {"Content-Type": "text/plain"}, "Forbidden")
-
-    def _challenge(self, difficulty: int, request: dict, use_json: bool) -> _Response:
+    def _rate_limited(self, request: Request, scope: str, limit: int) -> bool:
         ip_hash = self.engine._hash_ip(request["remote_addr"])
-        if not self.engine._rate_limiter.hit(
-            f"gen:{ip_hash}",
-            self.engine.policy.max_challenge_requests,
-            self.engine.policy.rate_limit_window,
-        ):
-            if use_json:
-                return _Response(403, dict(_JSON_CT), '{"error":"too many requests"}')
-            return _Response(403, {"Content-Type": "text/plain"}, "Too Many Requests")
+        return not self.engine._rate_limiter.hit(
+            f"{scope}:{ip_hash}", limit, self.engine.policy.rate_limit_window
+        )
+
+    def _retry_challenge(self, request: Request, redirect: str) -> _Response:
+        challenge = self.engine.issue_challenge(
+            self.engine.policy.default_difficulty, request
+        )
+        body = self.engine.render_challenge(
+            challenge, redirect, request, error=_RETRY_ERROR
+        )
+        headers = _challenge_headers(self.engine.policy.challenge_handler)
+        return _Response(429, headers, body)
+
+    def _challenge(self, difficulty: int, request: Request, use_json: bool) -> _Response:
+        policy = self.engine.policy
+        if self._rate_limited(request, "gen", policy.max_challenge_requests):
+            return _error(use_json, 403, "Too Many Requests")
 
         challenge = self.engine.issue_challenge(difficulty, request)
         path = request["path"]
 
         if use_json:
-            handler = self.engine.policy.challenge_handler
-            payload = handler.render_payload(challenge, self.verify_path, path)
-            csrf_token = self.engine.generate_csrf_token(challenge.id, request)
-            payload["csrfToken"] = csrf_token
+            payload = policy.challenge_handler.render_payload(
+                challenge, self.verify_path, path
+            )
+            payload["csrfToken"] = self.engine.generate_csrf_token(
+                challenge.id, request
+            )
             body = json.dumps({"challenge": payload})
             return _Response(200, dict(_JSON_CT), body)
 
         body = self.engine.render_challenge(challenge, path, request)
-        return _Response(
-            200, _challenge_headers(self.engine.policy.challenge_handler), body
-        )
+        return _Response(200, _challenge_headers(policy.challenge_handler), body)
 
-    def _handle_poll(self, request: dict) -> _Response:
+    def _handle_poll(self, body: dict) -> _Response:
         handler = self.engine.policy.challenge_handler
-        result = handler.handle_http_poll(request.get("json"), self.engine)
+        result = handler.handle_http_poll(body, self.engine)
         return _Response(200, dict(_JSON_CT), json.dumps(result))
 
-    def _handle_verify(self, request: dict) -> _Response:
+    def _handle_verify(self, request: Request) -> _Response:
         form = request["form"]
         nonce = form.get("nonce") or ",".join(
             filter(None, [form.get("nonce.x", ""), form.get("nonce.y", "")])
         )
-        csrf_token = form.get("csrf_token", "")
         token = self.engine.validate_challenge(
-            form.get("id", ""), nonce, request, csrf_token
+            form.get("id", ""), nonce, request, form.get("csrf_token", "")
         )
         use_json = self._is_json(request)
+        redirect = _safe_redirect(form.get("redirect", "/"))
+        policy = self.engine.policy
 
         if not token:
-            ip_hash = self.engine._hash_ip(request["remote_addr"])
-            if not self.engine._rate_limiter.hit(
-                f"fail:{ip_hash}",
-                self.engine.policy.max_challenge_failures,
-                self.engine.policy.rate_limit_window,
-            ):
-                if use_json:
-                    return _Response(
-                        403, dict(_JSON_CT), '{"error":"too many requests"}'
-                    )
-                return _Response(
-                    403, {"Content-Type": "text/plain"}, "Too Many Requests"
-                )
-
+            if self._rate_limited(request, "fail", policy.max_challenge_failures):
+                return _error(use_json, 403, "Too Many Requests")
             if use_json:
-                return _Response(403, dict(_JSON_CT), '{"error":"invalid"}')
-            if self.engine.policy.challenge_handler.retry_on_failure:
-                redirect = _safe_redirect(form.get("redirect", "/"))
-                challenge = self.engine.issue_challenge(
-                    self.engine.policy.default_difficulty, request
-                )
-                body = self.engine.render_challenge(
-                    challenge,
-                    redirect,
-                    request,
-                    error='<p class="error">Incorrect \u2014 try again.</p>',
-                )
-                return _Response(
-                    429, _challenge_headers(self.engine.policy.challenge_handler), body
-                )
-            return _Response(403, {"Content-Type": "text/plain"}, "Invalid")
+                return _error(True, 403, "Invalid")
+            if policy.challenge_handler.retry_on_failure:
+                return self._retry_challenge(request, redirect)
+            return _error(False, 403, "Invalid")
 
         if use_json:
             return _Response(200, dict(_JSON_CT), json.dumps({"token": token}))
 
-        redirect = _safe_redirect(form.get("redirect", "/"))
-        p = self.engine.policy
         cookie = {
-            "key": p.cookie_name,
+            "key": policy.cookie_name,
             "value": token,
-            "max_age": p.cookie_ttl,
+            "max_age": policy.cookie_ttl,
             "path": "/",
             "httponly": True,
             "samesite": "Strict",
-            "secure": p.cookie_secure and request.get("secure", False),
+            "secure": policy.cookie_secure and request.get("secure", False),
         }
         return _Response(302, {"Location": redirect}, "", cookie=cookie)
 
+    def _verified_claims(self, request: Request) -> bool:
+        cookie = request["cookies"].get(self.engine.policy.cookie_name)
+        if not cookie:
+            return False
+        claims = self.engine.check_cookie(cookie, request)
+        if not claims or not self.engine.check_token_limit(claims["cid"]):
+            return False
+        client_id = self.engine.generate_client_id(request)
+        request["_claims"] = _make_claims(request["user_agent"], client_id, **claims)
+        return True
+
     def process_request(
-        self, request: dict, force: str | None = None, deny_challenges: bool = False
+        self, request: Request, force: str | None = None, deny_challenges: bool = False
     ) -> _Response | None:
         if self.is_excluded(request["path"]):
             return None
 
         if self.is_verify(request["method"], request["path"]):
-            handler = self.engine.policy.challenge_handler
-            if request.get("json") is not None:
-                if handler.supports_http_poll:
-                    return self._handle_poll(request)
-                return _Response(400, dict(_JSON_CT), '{"error":"bad request"}')
-            cookie = request["cookies"].get(self.engine.policy.cookie_name)
-            if cookie and self.engine.check_cookie(cookie, request):
-                return self._deny(self._is_json(request))
-            return self._handle_verify(request)
+            return self._verify_route(request)
 
-        cookie = request["cookies"].get(self.engine.policy.cookie_name)
-        if cookie:
-            claims = self.engine.check_cookie(cookie, request)
-            if claims and self.engine.check_token_limit(claims["cid"]):
-                client_id = self.engine.generate_client_id(request)
-                request["_claims"] = _make_claims(
-                    request["user_agent"], client_id, **claims
-                )
-                return None
+        if self._verified_claims(request):
+            return None
 
         if force:
-            action, difficulty, matched_rule = (
-                force,
-                self.engine.policy.default_difficulty,
-                None,
-            )
+            action, difficulty, matched_rule = force, None, None
         else:
             action, difficulty, matched_rule = self.engine.policy.evaluate(
                 request, self.engine.blocklist
             )
 
         if action == "allow":
-            bl_match = (
-                _blocklist_match(self.engine.blocklist, request["remote_addr"])
-                if matched_rule and matched_rule.blocklist
-                else None
-            )
-            client_id = self.engine.generate_client_id(request)
-            request["_claims"] = _make_claims(
-                request["user_agent"],
-                client_id,
-                matched_rule=matched_rule.name if matched_rule else None,
-                blocklist_match=bl_match,
-            )
+            self._allow_claims(request, matched_rule)
             return None
 
         use_json = self._is_json(request)
         if action == "deny" or deny_challenges:
-            return self._deny(use_json)
+            return _error(use_json, 403, "Forbidden")
+
+        difficulty = difficulty or self.engine.policy.default_difficulty
         return self._challenge(difficulty, request, use_json)
+
+    def _verify_route(self, request: Request) -> _Response:
+        handler = self.engine.policy.challenge_handler
+        body = request.get("json")
+        if body is not None:
+            if handler.supports_http_poll:
+                return self._handle_poll(body)
+            return _Response(400, dict(_JSON_CT), '{"error":"bad request"}')
+
+        cookie = request["cookies"].get(self.engine.policy.cookie_name)
+        if cookie and self.engine.check_cookie(cookie, request):
+            return _error(self._is_json(request), 403, "Forbidden")
+        return self._handle_verify(request)
+
+    def _allow_claims(self, request: Request, matched_rule) -> None:
+        blocklist_match = (
+            _blocklist_match(self.engine.blocklist, request["remote_addr"])
+            if matched_rule and matched_rule.blocklist
+            else None
+        )
+        request["_claims"] = _make_claims(
+            request["user_agent"],
+            self.engine.generate_client_id(request),
+            matched_rule=matched_rule.name if matched_rule else None,
+            blocklist_match=blocklist_match,
+        )
+
+    def _apply(self, request: Request, **kwargs):
+        result = self.process_request(request, **kwargs)
+        if result:
+            return _to_response(result)
+        flask.g.vouch = request.get("_claims")
+        return None
 
     def _check(self):
         endpoint = flask.request.endpoint
@@ -341,12 +334,19 @@ class Vouch:
         if view and getattr(view, "_vouch_exempt", False):
             return None
 
-        req = _to_request()
-        result = self.process_request(req)
-        if result:
-            return _to_response(result)
-        flask.g.vouch = req.get("_claims")
-        return None
+        return self._apply(_to_request())
+
+    def _guard(self, **kwargs):
+        def decorator(view):
+            @wraps(view)
+            def wrapper(*args, **view_kwargs):
+                result = self._apply(_to_request(), **kwargs)
+                return result if result else view(*args, **view_kwargs)
+
+            wrapper._vouch_exempt = True  # type: ignore[attr-defined]
+            return wrapper
+
+        return decorator
 
     def exempt(self, view):
         """Decorator, or endpoint name, that skips the bouncer check.
@@ -362,56 +362,19 @@ class Vouch:
 
     def protect(self, view):
         """Decorator: always run bouncer check on this route (overrides global allow)."""
-
-        @wraps(view)
-        def wrapper(*args, **kwargs):
-            req = _to_request()
-            result = self.process_request(req)
-            if result:
-                return _to_response(result)
-            flask.g.vouch = req.get("_claims")
-            return view(*args, **kwargs)
-
-        wrapper._vouch_exempt = True  # type: ignore[attr-defined]
-        return wrapper
+        return self._guard()(view)
 
     def challenge(self, view):
         """Decorator: always issue a challenge on this route regardless of policy."""
-
-        @wraps(view)
-        def wrapper(*args, **kwargs):
-            req = _to_request()
-            result = self.process_request(req, force="challenge")
-            if result:
-                return _to_response(result)
-            flask.g.vouch = req.get("_claims")
-            return view(*args, **kwargs)
-
-        wrapper._vouch_exempt = True  # type: ignore[attr-defined]
-        return wrapper
+        return self._guard(force="challenge")(view)
 
     def block(self, view):
         """Decorator: deny anything the policy would challenge or deny; pass allows."""
-
-        @wraps(view)
-        def wrapper(*args, **kwargs):
-            req = _to_request()
-            result = self.process_request(req, deny_challenges=True)
-            if result:
-                return _to_response(result)
-            flask.g.vouch = req.get("_claims")
-            return view(*args, **kwargs)
-
-        wrapper._vouch_exempt = True  # type: ignore[attr-defined]
-        return wrapper
+        return self._guard(deny_challenges=True)(view)
 
     def mount_verify(self, app: flask.Flask) -> None:
         """Manually register the verify endpoint on a given app."""
 
         @app.route(self.verify_path, methods=["POST"])
         def _verify():
-            req = _to_request()
-            result = self.process_request(req)
-            if result:
-                return _to_response(result)
-            return "", 200
+            return self._apply(_to_request()) or ("", 200)

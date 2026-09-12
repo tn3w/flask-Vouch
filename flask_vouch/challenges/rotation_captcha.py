@@ -1,18 +1,14 @@
 import base64
-import hashlib
-import hmac
 import json
 import math
 import secrets
 import struct
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 
-from .base import DIFFICULTY_OFFSETS, ChallengeBase, ChallengeHandler, ChallengeType
+from .base import ChallengeBase, ChallengeType, SignedTokenHandler
 
-_TOKEN_TTL = 1800
 _DEG = math.pi / 180
 _MODELS_DIR = Path(__file__).parent / "models"
 
@@ -38,14 +34,6 @@ def _v3normalize(v):
     if length < 1e-10:
         return [0.0, 0.0, 0.0]
     return [v[0] / length, v[1] / length, v[2] / length]
-
-
-def _v3scale(v, s):
-    return [v[0] * s, v[1] * s, v[2] * s]
-
-
-def _v3add(a, b):
-    return [a[0] + b[0], a[1] + b[1], a[2] + b[2]]
 
 
 def _mat4_identity():
@@ -119,26 +107,6 @@ def _mat4_perspective(fov_deg, aspect, near, far):
     m[11] = -1.0
     m[14] = 2.0 * far * near * nf
     return m
-
-
-def _transform_point(m, p):
-    x = m[0] * p[0] + m[4] * p[1] + m[8] * p[2] + m[12]
-    y = m[1] * p[0] + m[5] * p[1] + m[9] * p[2] + m[13]
-    z = m[2] * p[0] + m[6] * p[1] + m[10] * p[2] + m[14]
-    w = m[3] * p[0] + m[7] * p[1] + m[11] * p[2] + m[15]
-    return [x, y, z, w]
-
-
-def _clip_to_screen(clip, size):
-    if clip[3] <= 0:
-        return None
-    inv_w = 1.0 / clip[3]
-    return [
-        (clip[0] * inv_w * 0.5 + 0.5) * size,
-        (1.0 - (clip[1] * inv_w * 0.5 + 0.5)) * size,
-        clip[2] * inv_w,
-        clip[3],
-    ]
 
 
 def _imul(a, b):
@@ -529,11 +497,6 @@ def _render_splat_image(mesh, angle_deg, seed, size=300):
         dx = float(rng_np.random()) * size
         dy = float(rng_np.random()) * size
         dr = max(3, int(4 + rng_np.random() * 10))
-        da = 0.08 + float(rng_np.random()) * 0.18
-
-        a0 = int((da + 0.1) * 255)
-        a1 = int(da * 0.5 * 255)
-
         decoy = _splat_template(dr)
         canvas.alpha_composite(decoy, (int(dx - dr), int(dy - dr)))
 
@@ -563,73 +526,27 @@ def _render_sprite_sheet(mesh, angles, seed, size=300):
 
 
 @dataclass
-class RotationCaptcha(ChallengeHandler):
+class RotationCaptcha(SignedTokenHandler):
     choice_count: int = 6
     image_size: int = 300
-    token_ttl: int = _TOKEN_TTL
-    secret: bytes = field(
-        default_factory=lambda: secrets.token_bytes(32),
-    )
 
     @property
     def challenge_type(self) -> ChallengeType:
         return ChallengeType.ROTATION_CAPTCHA
 
-    def to_difficulty(self, base: int) -> int:
-        return base + DIFFICULTY_OFFSETS[self.challenge_type]
-
-    @property
-    def template(self) -> str:
-        return (
-            Path(__file__).parent / "templates" / "rotation_captcha.html"
-        ).read_text()
-
-    def _sign(self, payload: str) -> str:
-        return hmac.new(self.secret, payload.encode(), hashlib.sha256).hexdigest()
-
-    def _encrypt(self, plaintext: str, iv: str) -> str:
-        key = hmac.new(self.secret, iv.encode(), hashlib.sha256).digest()
-        return bytes(a ^ b for a, b in zip(plaintext.encode(), key)).hex()
-
-    def _decrypt_token(self, token: str) -> str:
-        iv, ct_hex, ts, nonce, sig = token.split(":")
-        payload = f"{iv}:{ct_hex}:{ts}:{nonce}"
-        if not hmac.compare_digest(self._sign(payload), sig):
-            raise ValueError("invalid signature")
-        if time.time() - int(ts) > self.token_ttl:
-            raise ValueError("token expired")
-        key = hmac.new(self.secret, iv.encode(), hashlib.sha256).digest()
-        return bytes(a ^ b for a, b in zip(bytes.fromhex(ct_hex), key)).decode()
-
     def generate_random_data(self, difficulty: int = 0) -> str:
         seed = secrets.randbelow(2**31)
         rng = _create_rng(seed)
-        step_size = 360 / self.choice_count
 
         correct_idx = int(rng() * self.choice_count)
         base_angle = int(rng() * 360)
 
-        angles = [(base_angle + i * step_size) % 360 for i in range(self.choice_count)]
-        correct_angle = angles[correct_idx]
-
         solution = f"{correct_idx}:{seed}:{base_angle}"
-        iv = secrets.token_hex(16)
-        ct = self._encrypt(solution, iv)
-        ts = str(int(time.time()))
-        nonce = secrets.token_hex(8)
-        payload = f"{iv}:{ct}:{ts}:{nonce}"
-        return f"{payload}:{self._sign(payload)}"
-
-    @property
-    def retry_on_failure(self) -> bool:
-        return True
-
-    def nonce_from_form(self, raw: str) -> str:
-        return raw.strip()
+        return self.issue_token(solution)
 
     def verify(self, random_data: str, nonce: int | str, difficulty: int) -> bool:
         try:
-            solution = self._decrypt_token(random_data)
+            solution = self.read_token(random_data)
             correct_idx = int(solution.split(":")[0])
             return int(nonce) == correct_idx
         except Exception:
@@ -641,7 +558,7 @@ class RotationCaptcha(ChallengeHandler):
         verify_path: str,
         redirect: str,
     ) -> dict:
-        solution = self._decrypt_token(challenge.random_data)
+        solution = self.read_token(challenge.random_data)
         correct_idx, seed, base_angle = solution.split(":")
         correct_idx = int(correct_idx)
         seed = int(seed)

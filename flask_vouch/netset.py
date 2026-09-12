@@ -7,9 +7,7 @@ from urllib.request import urlopen
 
 log = logging.getLogger("flask_vouch.netset")
 
-NETSET_URL = (
-    "https://github.com/tn3w/plevin/releases/latest/download/blocklist.netset"
-)
+NETSET_URL = "https://github.com/tn3w/plevin/releases/latest/download/blocklist.netset"
 
 
 def _parse_line(line):

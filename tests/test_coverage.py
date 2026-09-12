@@ -8,15 +8,6 @@ from unittest.mock import patch
 import flask
 
 from flask_vouch import Engine, Policy, Rule, Vouch
-from flask_vouch.netset import (
-    NetSet,
-    _cache_path_for,
-    _contains,
-    _load_text,
-    _merge,
-    _parse_line,
-    parse_netset,
-)
 from flask_vouch.challenges.base import (
     ChallengeBase,
     ChallengeType,
@@ -38,6 +29,15 @@ from flask_vouch.engine import (
     crawler_name,
     is_crawler,
     load_policy,
+)
+from flask_vouch.netset import (
+    NetSet,
+    _cache_path_for,
+    _contains,
+    _load_text,
+    _merge,
+    _parse_line,
+    parse_netset,
 )
 
 SECRET = "test-secret-key-32-bytes-long!!!"
@@ -248,9 +248,7 @@ class TestNetSet:
         assert isinstance(result, NetSet)
 
     def test_from_sources_list(self):
-        result = NetSet.from_sources(
-            ["https://a.com/a.txt", "https://b.com/b.txt"]
-        )
+        result = NetSet.from_sources(["https://a.com/a.txt", "https://b.com/b.txt"])
         assert len(result) == 2
 
     def test_load_from_file(self):
@@ -424,12 +422,6 @@ class TestChallengeBase:
 
 
 class TestChallengeHandlerDefaults:
-    def test_supports_websocket(self):
-        from flask_vouch.challenges.sha256_balloon import SHA256Balloon
-
-        h = SHA256Balloon()
-        assert h.supports_websocket is False
-
     def test_extra_csp(self):
         from flask_vouch.challenges.sha256_balloon import SHA256Balloon
 
@@ -752,8 +744,7 @@ class TestEngineProcessCookiePath:
     def test_valid_cookie_bypasses(self):
         engine, token = self.make_engine()
         req = make_request(cookies={COOKIE_NAME: token})
-        action, status, _, _ = engine.process(req)
-        assert action == "pass"
+        assert Vouch(engine=engine).process_request(req) is None
 
     def test_invalid_cookie_falls_back_to_policy(self):
         engine = Engine(
@@ -763,10 +754,9 @@ class TestEngineProcessCookiePath:
         req = make_request(
             user_agent="Bot/1.0", cookies={COOKIE_NAME: "bad.token.value"}
         )
-        action, status, _, body = engine.process(req)
-        assert action == "deny"
-        assert status == 403
-        assert body == "Forbidden"
+        result = Vouch(engine=engine).process_request(req)
+        assert result.status == 403
+        assert result.body == "Forbidden"
 
 
 # --- Vouch callable json_mode ---
@@ -1156,7 +1146,7 @@ class TestEngineVerifyBranches:
         challenge = engine.issue_challenge(0, req)
         csrf = engine.generate_csrf_token(challenge.id, req)
 
-        status, headers, _ = engine.handle_verify(
+        result = Vouch(engine=engine).process_request(
             make_request(
                 method="POST",
                 path=engine.policy.verify_path,
@@ -1170,8 +1160,8 @@ class TestEngineVerifyBranches:
             )
         )
 
-        assert status == 302
-        assert headers["Location"] == "/done"
+        assert result.status == 302
+        assert result.headers["Location"] == "/done"
 
     def test_handle_verify_retry_uses_safe_redirect(self):
         class RetryHandler(SHA256):
@@ -1183,7 +1173,7 @@ class TestEngineVerifyBranches:
             secret=SECRET,
             policy=Policy(rules=[], challenge_handler=RetryHandler()),
         )
-        status, headers, body = engine.handle_verify(
+        result = Vouch(engine=engine).process_request(
             make_request(
                 method="POST",
                 path=engine.policy.verify_path,
@@ -1191,6 +1181,6 @@ class TestEngineVerifyBranches:
             )
         )
 
-        assert status == 200
-        assert "Content-Security-Policy" in headers
-        assert '"redirect": "/"' in body
+        assert result.status == 429
+        assert "Content-Security-Policy" in result.headers
+        assert '"redirect": "/"' in result.body

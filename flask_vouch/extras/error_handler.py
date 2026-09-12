@@ -1,4 +1,3 @@
-import re
 from pathlib import Path
 
 _DEFAULT_ACCENT = "#44ff88"
@@ -129,26 +128,6 @@ ERROR_CODES: dict[int, dict[str, str]] = {
 }
 
 
-def _render(
-    code: int,
-    template: str,
-    templates: dict[int, str],
-    overrides: dict[int, dict],
-    accent_color: str,
-    **extra,
-) -> str:
-    info = overrides.get(code, ERROR_CODES.get(code, {}))
-    tmpl = templates.get(code, template)
-    ctx = {
-        "status_code": str(code),
-        "title": info.get("title", "Error"),
-        "description": info.get("description", "An error occurred."),
-        "ACCENT_COLOR": accent_color,
-        **extra,
-    }
-    return re.sub(r"\{\{(\w+)\}\}", lambda m: ctx.get(m.group(1), m.group(0)), tmpl)
-
-
 class ErrorHandler:
     """Flask HTTP error handler with template rendering.
 
@@ -213,30 +192,33 @@ class ErrorHandler:
         if self._accent_color:
             return self._accent_color
         if flask_app is not None:
-            tb = flask_app.extensions.get("bouncer")
-            if tb and hasattr(tb, "engine"):
-                return tb.engine.policy.accent_color
+            vouch = flask_app.extensions.get("vouch")
+            if vouch and hasattr(vouch, "engine"):
+                return vouch.engine.policy.accent_color
         return _DEFAULT_ACCENT
 
-    def render(self, code: int, **extra) -> str:
-        return _render(
-            code,
-            self._template,
-            self._templates,
-            self._overrides,
-            self._accent_color or _DEFAULT_ACCENT,
+    def render(self, code: int, accent: str | None = None, **extra) -> str:
+        info = self._overrides.get(code, ERROR_CODES.get(code, {}))
+        context = {
+            "status_code": str(code),
+            "title": info.get("title", "Error"),
+            "description": info.get("description", "An error occurred."),
+            "ACCENT_COLOR": accent or self._accent_color or _DEFAULT_ACCENT,
             **extra,
-        )
+        }
+        template = self._templates.get(code, self._template)
+        for key, value in context.items():
+            template = template.replace(f"{{{{{key}}}}}", str(value))
+        return template
 
     def init_flask(self, app):
         accent = self._accent(app)
-        tmpl, tmpls, ovrs = self._template, self._templates, self._overrides
 
         def handler(exc):
             code = getattr(exc, "code", 500)
             if not isinstance(code, int):
                 code = 500
-            body = _render(code, tmpl, tmpls, ovrs, accent)
+            body = self.render(code, accent=accent)
             return body, code, {"Content-Type": "text/html; charset=utf-8"}
 
         for code in self._codes:

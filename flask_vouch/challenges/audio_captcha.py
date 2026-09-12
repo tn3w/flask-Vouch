@@ -1,25 +1,18 @@
 import base64
-import hashlib
-import hmac
 import io
 import secrets
-import time
 from dataclasses import dataclass, field
-from pathlib import Path
-from threading import Lock
 
-from .base import DIFFICULTY_OFFSETS, ChallengeBase, ChallengeHandler, ChallengeType
+from .base import ChallengeBase, ChallengeType, RenderCache, SignedTokenHandler
 from .datasets import get_default_store
 
-_TOKEN_TTL = 1800
-_RENDER_CACHE_SIZE = 64
 _SAMPLE_RATE = 44100
 
 
 def _ensure_audio_deps():
     try:
         import numpy as np
-        from scipy.io.wavfile import write as write_wav
+        from scipy.io.wavfile import write as write_wav  # pyright: ignore[reportMissingImports]
 
         return np, write_wav
     except ImportError as e:
@@ -51,7 +44,7 @@ def _noise(duration_ms: int, level: float = 0.05):
 
 def _wav_to_samples(wav_bytes: bytes):
     np, _ = _ensure_audio_deps()
-    from scipy.io.wavfile import read as read_wav
+    from scipy.io.wavfile import read as read_wav  # pyright: ignore[reportMissingImports]
 
     buf = io.BytesIO(wav_bytes)
     _, samples = read_wav(buf)
@@ -138,7 +131,7 @@ def _combine_audio(
         ).astype(np.int16)
 
     try:
-        from pydub import AudioSegment
+        from pydub import AudioSegment  # pyright: ignore[reportMissingImports]
 
         wav_buf = io.BytesIO()
         write_wav(wav_buf, _SAMPLE_RATE, combined)
@@ -153,71 +146,14 @@ def _combine_audio(
 
 
 @dataclass
-class AudioCaptcha(ChallengeHandler):
+class AudioCaptcha(SignedTokenHandler):
     dataset: str = "characters"
     lang: str = "en"
-    token_ttl: int = _TOKEN_TTL
-    secret: bytes = field(
-        default_factory=lambda: secrets.token_bytes(32),
-    )
-
-    def __post_init__(self):
-        self._cache: dict[str, dict] = {}
-        self._cache_lock = Lock()
+    cache: RenderCache = field(default_factory=RenderCache)
 
     @property
     def challenge_type(self) -> ChallengeType:
         return ChallengeType.AUDIO_CAPTCHA
-
-    def to_difficulty(self, base: int) -> int:
-        return base + DIFFICULTY_OFFSETS[self.challenge_type]
-
-    @property
-    def template(self) -> str:
-        return (Path(__file__).parent / "templates" / "audio_captcha.html").read_text()
-
-    def _sign(self, payload: str) -> str:
-        return hmac.new(
-            self.secret,
-            payload.encode(),
-            hashlib.sha256,
-        ).hexdigest()
-
-    def _encrypt(self, plaintext: str, iv: str) -> str:
-        key = hmac.new(
-            self.secret,
-            iv.encode(),
-            hashlib.sha256,
-        ).digest()
-        stream = key * (len(plaintext) // len(key) + 1)
-        return bytes(a ^ b for a, b in zip(plaintext.encode(), stream)).hex()
-
-    def _decrypt_token(self, token: str) -> str:
-        iv, ct_hex, ts, nonce, sig = token.split(":")
-        payload = f"{iv}:{ct_hex}:{ts}:{nonce}"
-
-        if not hmac.compare_digest(self._sign(payload), sig):
-            raise ValueError("invalid signature")
-
-        if time.time() - int(ts) > self.token_ttl:
-            raise ValueError("token expired")
-
-        key = hmac.new(
-            self.secret,
-            iv.encode(),
-            hashlib.sha256,
-        ).digest()
-        ct = bytes.fromhex(ct_hex)
-        stream = key * (len(ct) // len(key) + 1)
-        return bytes(a ^ b for a, b in zip(ct, stream)).decode()
-
-    def _evict_cache(self):
-        while len(self._cache) > _RENDER_CACHE_SIZE:
-            oldest = min(
-                self._cache,
-                key=lambda k: self._cache[k]["ts"],
-            )
-            del self._cache[oldest]
 
     def generate_random_data(self, difficulty: int = 0) -> str:
         char_count = max(4, min(difficulty + 3, 8))
@@ -234,31 +170,13 @@ class AudioCaptcha(ChallengeHandler):
         audio_bytes = _combine_audio(audio_files, hardness)
 
         b64 = base64.b64encode(audio_bytes).decode()
-        audio_url = f"data:audio/mp3;base64,{b64}"
-
-        iv = secrets.token_hex(16)
-        ct = self._encrypt(solution, iv)
-        ts = str(int(time.time()))
-        nonce = secrets.token_hex(8)
-        payload = f"{iv}:{ct}:{ts}:{nonce}"
-        signed = f"{payload}:{self._sign(payload)}"
-
-        with self._cache_lock:
-            self._evict_cache()
-            self._cache[signed] = {
-                "audio": audio_url,
-                "ts": time.time(),
-            }
-
-        return signed
+        token = self.issue_token(solution)
+        self.cache.put(token, {"audio": f"data:audio/mp3;base64,{b64}"})
+        return token
 
     @property
     def extra_csp(self) -> str:
         return "media-src data:"
-
-    @property
-    def retry_on_failure(self) -> bool:
-        return True
 
     def nonce_from_form(self, raw: str) -> str:
         return raw.strip().upper()
@@ -270,7 +188,7 @@ class AudioCaptcha(ChallengeHandler):
         difficulty: int,
     ) -> bool:
         try:
-            correct = self._decrypt_token(random_data)
+            correct = self.read_token(random_data)
             return correct.upper() == str(nonce).upper()
         except Exception:
             return False
@@ -281,12 +199,7 @@ class AudioCaptcha(ChallengeHandler):
         verify_path: str,
         redirect: str,
     ) -> dict:
-        with self._cache_lock:
-            cached = self._cache.pop(
-                challenge.random_data,
-                None,
-            )
-
+        cached = self.cache.pop(challenge.random_data)
         if not cached:
             raise RuntimeError("audio cache expired")
 

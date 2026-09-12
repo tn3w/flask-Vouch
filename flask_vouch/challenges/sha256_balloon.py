@@ -1,10 +1,8 @@
 import hashlib
 import struct
 from dataclasses import dataclass
-from pathlib import Path
 
 from .base import (
-    DIFFICULTY_OFFSETS,
     ChallengeBase,
     ChallengeHandler,
     ChallengeType,
@@ -63,13 +61,6 @@ class SHA256Balloon(ChallengeHandler):
     @property
     def challenge_type(self) -> ChallengeType:
         return ChallengeType.SHA256_BALLOON
-
-    def to_difficulty(self, base: int) -> int:
-        return base + DIFFICULTY_OFFSETS[self.challenge_type]
-
-    @property
-    def template(self) -> str:
-        return (Path(__file__).parent / "templates" / "sha256_balloon.html").read_text()
 
     def verify(self, random_data: str, nonce: int | str, difficulty: int) -> bool:
         result = _balloon(

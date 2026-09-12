@@ -1,7 +1,16 @@
+import hashlib
+import hmac
 import secrets
+import time
 from abc import ABC, abstractmethod
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from enum import Enum
+from pathlib import Path
+from threading import Lock
+
+TEMPLATES_DIR = Path(__file__).parent / "templates"
+TOKEN_TTL = 1800
+RENDER_CACHE_SIZE = 64
 
 
 class ChallengeType(str, Enum):
@@ -17,6 +26,7 @@ class ChallengeType(str, Enum):
     AUDIO_CAPTCHA = "audio-captcha"
     ROTATION_CAPTCHA = "rotation-captcha"
     TRACE_CAPTCHA = "trace-captcha"
+    CUP_CAPTCHA = "cup-captcha"
     CHAIN_CAPTCHA = "chain-captcha"
     QUIRK_PROBE = "quirk-probe"
 
@@ -34,6 +44,7 @@ DIFFICULTY_OFFSETS: dict[ChallengeType, int] = {
     ChallengeType.AUDIO_CAPTCHA: -4,
     ChallengeType.ROTATION_CAPTCHA: -4,
     ChallengeType.TRACE_CAPTCHA: -4,
+    ChallengeType.CUP_CAPTCHA: -4,
     ChallengeType.CHAIN_CAPTCHA: 0,
     ChallengeType.QUIRK_PROBE: 0,
 }
@@ -67,13 +78,6 @@ class ChallengeHandler(ABC):
     def challenge_type(self) -> ChallengeType: ...
 
     @abstractmethod
-    def to_difficulty(self, base: int) -> int: ...
-
-    @property
-    @abstractmethod
-    def template(self) -> str: ...
-
-    @abstractmethod
     def verify(self, random_data: str, nonce: int | str, difficulty: int) -> bool: ...
 
     @abstractmethod
@@ -83,6 +87,14 @@ class ChallengeHandler(ABC):
         verify_path: str,
         redirect: str,
     ) -> dict: ...
+
+    def to_difficulty(self, base: int) -> int:
+        return base + DIFFICULTY_OFFSETS[self.challenge_type]
+
+    @property
+    def template(self) -> str:
+        name = self.challenge_type.value.replace("-", "_")
+        return (TEMPLATES_DIR / f"{name}.html").read_text()
 
     def generate_random_data(self, difficulty: int = 0) -> str:
         return secrets.token_hex(64)
@@ -98,13 +110,6 @@ class ChallengeHandler(ABC):
         return {}
 
     @property
-    def supports_websocket(self) -> bool:
-        return False
-
-    async def handle_websocket(self, _scope, _receive, _send, _engine) -> None:
-        pass
-
-    @property
     def extra_csp(self) -> str:
         return ""
 
@@ -114,3 +119,69 @@ class ChallengeHandler(ABC):
 
     def handle_http_poll(self, _body: dict, _engine) -> dict:
         return {"type": "error", "reason": "not supported"}
+
+
+@dataclass
+class SignedTokenHandler(ChallengeHandler):
+    """Handler whose solution travels inside an encrypted, signed, expiring token."""
+
+    token_ttl: int = TOKEN_TTL
+    secret: bytes = field(default_factory=lambda: secrets.token_bytes(32))
+
+    def _sign(self, payload: str) -> str:
+        return hmac.new(self.secret, payload.encode(), hashlib.sha256).hexdigest()
+
+    def _keystream(self, iv: str, length: int) -> bytes:
+        key = hmac.new(self.secret, iv.encode(), hashlib.sha256).digest()
+        return (key * (length // len(key) + 1))[:length]
+
+    def issue_token(self, solution: str, suffix: str = "") -> str:
+        iv = secrets.token_hex(16)
+        plaintext = solution.encode()
+        ciphertext = bytes(
+            a ^ b for a, b in zip(plaintext, self._keystream(iv, len(plaintext)))
+        ).hex()
+        payload = f"{iv}:{ciphertext}:{int(time.time())}:{secrets.token_hex(8)}"
+        return f"{payload}:{self._sign(payload)}{suffix}"
+
+    def read_token(self, token: str) -> str:
+        iv, ciphertext, issued_at, nonce, signature = token.split(":")[:5]
+        payload = f"{iv}:{ciphertext}:{issued_at}:{nonce}"
+
+        if not hmac.compare_digest(self._sign(payload), signature):
+            raise ValueError("invalid signature")
+
+        if time.time() - int(issued_at) > self.token_ttl:
+            raise ValueError("token expired")
+
+        data = bytes.fromhex(ciphertext)
+        return bytes(
+            a ^ b for a, b in zip(data, self._keystream(iv, len(data)))
+        ).decode()
+
+    @property
+    def retry_on_failure(self) -> bool:
+        return True
+
+    def nonce_from_form(self, raw: str) -> int | str:
+        return raw.strip()
+
+
+class RenderCache:
+    """Holds the rendered media for a challenge until its page is built."""
+
+    def __init__(self, max_size: int = RENDER_CACHE_SIZE):
+        self._max_size = max_size
+        self._data: dict[str, tuple[float, dict]] = {}
+        self._lock = Lock()
+
+    def put(self, key: str, value: dict) -> None:
+        with self._lock:
+            while len(self._data) >= self._max_size:
+                del self._data[min(self._data, key=lambda k: self._data[k][0])]
+            self._data[key] = (time.time(), value)
+
+    def pop(self, key: str) -> dict | None:
+        with self._lock:
+            entry = self._data.pop(key, None)
+        return entry[1] if entry else None

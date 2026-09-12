@@ -1,16 +1,10 @@
-import base64
-import hashlib
-import hmac
 import json
 import math
 import secrets
-import time
-from dataclasses import dataclass, field
-from pathlib import Path
+from dataclasses import dataclass
 
-from .base import DIFFICULTY_OFFSETS, ChallengeBase, ChallengeHandler, ChallengeType
+from .base import ChallengeBase, ChallengeType, SignedTokenHandler
 
-_TOKEN_TTL = 1800
 _W = _H = 320
 _MARGIN = 36
 _ENDPOINT_TOLERANCE = 42
@@ -72,57 +66,16 @@ def _coefficient_of_variation(values) -> float:
 
 
 @dataclass
-class TraceCaptcha(ChallengeHandler):
-    token_ttl: int = _TOKEN_TTL
-    secret: bytes = field(default_factory=lambda: secrets.token_bytes(32))
+class TraceCaptcha(SignedTokenHandler):
 
     @property
     def challenge_type(self) -> ChallengeType:
         return ChallengeType.TRACE_CAPTCHA
 
-    def to_difficulty(self, base: int) -> int:
-        return base + DIFFICULTY_OFFSETS[self.challenge_type]
-
-    @property
-    def template(self) -> str:
-        return (Path(__file__).parent / "templates" / "trace_captcha.html").read_text()
-
-    def _sign(self, payload: str) -> str:
-        return hmac.new(self.secret, payload.encode(), hashlib.sha256).hexdigest()
-
-    def _encrypt(self, plaintext: str, iv: str) -> str:
-        key = hmac.new(self.secret, iv.encode(), hashlib.sha256).digest()
-        stream = (key * (len(plaintext) // len(key) + 1))[: len(plaintext)]
-        return bytes(a ^ b for a, b in zip(plaintext.encode(), stream)).hex()
-
-    def _decrypt_token(self, token: str) -> str:
-        iv, ct_hex, ts, nonce, sig = token.split(":")
-        payload = f"{iv}:{ct_hex}:{ts}:{nonce}"
-        if not hmac.compare_digest(self._sign(payload), sig):
-            raise ValueError("invalid signature")
-        if time.time() - int(ts) > self.token_ttl:
-            raise ValueError("token expired")
-        key = hmac.new(self.secret, iv.encode(), hashlib.sha256).digest()
-        ct = bytes.fromhex(ct_hex)
-        stream = (key * (len(ct) // len(key) + 1))[: len(ct)]
-        return bytes(a ^ b for a, b in zip(ct, stream)).decode()
-
     def generate_random_data(self, difficulty: int = 0) -> str:
         curve = _random_curve()
         flat = ",".join(f"{x},{y}" for x, y in curve)
-        iv = secrets.token_hex(16)
-        ct = self._encrypt(flat, iv)
-        ts = str(int(time.time()))
-        nonce = secrets.token_hex(8)
-        payload = f"{iv}:{ct}:{ts}:{nonce}"
-        return f"{payload}:{self._sign(payload)}"
-
-    @property
-    def retry_on_failure(self) -> bool:
-        return True
-
-    def nonce_from_form(self, raw: str) -> str:
-        return raw.strip()
+        return self.issue_token(flat)
 
     def _parse_samples(self, nonce: str) -> list[list[float]]:
         data = json.loads(nonce)
@@ -131,7 +84,7 @@ class TraceCaptcha(ChallengeHandler):
         return data
 
     def _control_points(self, random_data: str):
-        raw = self._decrypt_token(random_data)
+        raw = self.read_token(random_data)
         nums = [int(n) for n in raw.split(",")]
         return [(nums[i], nums[i + 1]) for i in range(0, 8, 2)]
 

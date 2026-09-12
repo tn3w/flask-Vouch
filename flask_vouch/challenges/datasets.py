@@ -3,31 +3,23 @@ import json
 import pickle
 import secrets
 import threading
+from typing import Any
 from urllib.request import urlopen
+
+_IMAGE_BASE = (
+    "https://raw.githubusercontent.com/tn3w/Captcha_Datasets/refs/heads/master/datasets"
+)
 
 _DATASET_URLS: dict[str, dict[str, str]] = {
     "image": {
-        "keys": (
-            "https://raw.githubusercontent.com/tn3w/"
-            "Captcha_Datasets/refs/heads/master/"
-            "datasets/keys.pkl"
-        ),
-        "animals": (
-            "https://raw.githubusercontent.com/tn3w/"
-            "Captcha_Datasets/refs/heads/master/"
-            "datasets/animals.pkl"
-        ),
-        "ai_dogs": (
-            "https://raw.githubusercontent.com/tn3w/"
-            "Captcha_Datasets/refs/heads/master/"
-            "datasets/ai-dogs.pkl"
-        ),
+        "keys": f"{_IMAGE_BASE}/keys.pkl",
+        "animals": f"{_IMAGE_BASE}/animals.pkl",
+        "ai_dogs": f"{_IMAGE_BASE}/ai-dogs.pkl",
     },
     "audio": {
         "characters": (
             "https://raw.githubusercontent.com/librecap/"
-            "audiocaptcha/refs/heads/main/"
-            "characters/characters.pkl"
+            "audiocaptcha/refs/heads/main/characters/characters.pkl"
         ),
     },
 }
@@ -118,11 +110,11 @@ return results
 
 
 class DatasetStore:
-    def __init__(self, redis_client=None, prefix="tollbooth"):
+    def __init__(self, redis_client: Any = None, prefix: str = "tollbooth"):
         self._lock = threading.Lock()
         self._image: dict | None = None
         self._audio: dict | None = None
-        self._r = redis_client
+        self._r: Any = redis_client
         self._prefix = prefix
 
         if self._r:
@@ -192,31 +184,33 @@ class DatasetStore:
         chars_key = self._rkey(f"aud:{dataset}:chars")
         return self._r.scard(chars_key) > 0
 
+    def _load(self, kind: str, dataset: str, cached) -> dict | None:
+        with self._lock:
+            if cached is not None:
+                return None
+
+        url = _DATASET_URLS[kind].get(dataset)
+        if not url:
+            return None
+
+        return pickle.loads(self._download(url))  # noqa: S301
+
     def load_image(self, dataset: str = "ai_dogs") -> bool:
         if self._r and self._redis_has_images(dataset):
             return True
 
-        with self._lock:
-            if self._image is not None:
-                return True
-
-        url = _DATASET_URLS["image"].get(dataset)
-        if not url:
-            return False
-
-        raw = self._download(url)
-        data = pickle.loads(raw)  # noqa: S301
+        data = self._load("image", dataset, self._image)
+        if data is None:
+            return self._image is not None
 
         if data.get("type") != "image":
             return False
 
-        keys = data.get("keys", {})
-        if keys:
-            data["keys"] = self._decompress_images(keys)
-
-        if self._r and data.get("keys"):
-            self._store_images_redis(dataset, data["keys"])
-            return True
+        if data.get("keys"):
+            data["keys"] = self._decompress_images(data["keys"])
+            if self._r:
+                self._store_images_redis(dataset, data["keys"])
+                return True
 
         with self._lock:
             self._image = data
@@ -226,16 +220,9 @@ class DatasetStore:
         if self._r and self._redis_has_audio(dataset):
             return True
 
-        with self._lock:
-            if self._audio is not None:
-                return True
-
-        url = _DATASET_URLS["audio"].get(dataset)
-        if not url:
-            return False
-
-        raw = self._download(url)
-        data = pickle.loads(raw)  # noqa: S301
+        data = self._load("audio", dataset, self._audio)
+        if data is None:
+            return self._audio is not None
 
         if self._r and data.get("keys"):
             self._store_audio_redis(dataset, data["keys"])
@@ -310,22 +297,8 @@ class DatasetStore:
         if not result:
             return [], "", ""
 
-        flags_str = result[-1]
-        if isinstance(flags_str, bytes):
-            flags_str = flags_str.decode()
-
-        all_images = [
-            img if isinstance(img, bytes) else img.encode() for img in result[:-1]
-        ]
-
-        if preview:
-            images = all_images
-            correct_indices = flags_str
-        else:
-            images = all_images[1:]
-            correct_indices = flags_str
-
-        return images, correct_indices, correct_key
+        images = [_as_bytes(img) for img in result[:-1]]
+        return images if preview else images[1:], _as_text(result[-1]), correct_key
 
     def _get_images_local(
         self,
@@ -406,13 +379,7 @@ class DatasetStore:
         if not result:
             return [], ""
 
-        solution = result[-1]
-        if isinstance(solution, bytes):
-            solution = solution.decode()
-
-        audio_files = [a if isinstance(a, bytes) else a.encode() for a in result[:-1]]
-
-        return audio_files, solution
+        return [_as_bytes(a) for a in result[:-1]], _as_text(result[-1])
 
     def _get_audio_local(
         self,
@@ -438,6 +405,14 @@ class DatasetStore:
             return audio_files, solution
         except KeyError:
             return [], ""
+
+
+def _as_bytes(value) -> bytes:
+    return value if isinstance(value, bytes) else value.encode()
+
+
+def _as_text(value) -> str:
+    return value.decode() if isinstance(value, bytes) else value
 
 
 def _sample(pool: list, n: int) -> list:

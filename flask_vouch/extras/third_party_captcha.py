@@ -323,19 +323,6 @@ class ThirdPartyCaptcha:
             return False
         return _call_provider_api(captcha_type, token, secret)
 
-    def _verify_geetest_http(
-        self,
-        site_key: str,
-        secret: str,
-        lot_number: str,
-        captcha_output: str,
-        pass_token: str,
-        gen_time: str,
-    ) -> bool:
-        return _call_geetest_api(
-            site_key, secret, lot_number, captcha_output, pass_token, gen_time
-        )
-
     def _get_token(self, form_key: str) -> str | None:
         from flask import request as r
 
@@ -381,7 +368,7 @@ class ThirdPartyCaptcha:
         lot, output, token, gentime = (self._get_token(f) for f in _GEETEST_FIELDS)
         if not (lot and output and token and gentime):
             return False
-        return self._verify_geetest_http(site_key, secret, lot, output, token, gentime)
+        return _call_geetest_api(site_key, secret, lot, output, token, gentime)
 
     def is_altcha_valid(self) -> bool:
         if not self.altcha:

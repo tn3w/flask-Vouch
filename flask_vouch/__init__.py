@@ -1,4 +1,3 @@
-from flask_vouch.netset import NetSet
 from flask_vouch.challenges import (
     SHA256,
     AudioCaptcha,
@@ -35,6 +34,7 @@ from flask_vouch.extras.third_party_captcha import (
     MTCaptchaCreds,
     ThirdPartyCaptcha,
 )
+from flask_vouch.netset import NetSet
 from flask_vouch.vouch import Vouch, VouchKwargs
 
 __version__ = "1.2.0"

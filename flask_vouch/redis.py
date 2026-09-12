@@ -5,7 +5,6 @@ import threading
 import time
 from dataclasses import asdict, fields
 
-from flask_vouch.netset import NETSET_URL, _load_text, parse_netset
 from flask_vouch.challenges.datasets import DatasetStore, set_default_store
 from flask_vouch.engine import (
     CHALLENGE_TTL,
@@ -15,6 +14,7 @@ from flask_vouch.engine import (
     Policy,
     Rule,
 )
+from flask_vouch.netset import NETSET_URL, _load_text, parse_netset
 
 log = logging.getLogger("flask_vouch.redis")
 

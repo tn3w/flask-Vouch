@@ -1,16 +1,20 @@
-import hashlib
-import hmac as _hmac
-import json
 import random
 import re as _re
 import secrets
 import time
-from base64 import urlsafe_b64decode, urlsafe_b64encode
 from dataclasses import dataclass, field
-from pathlib import Path
-from threading import Lock
 
 from .base import ChallengeBase, ChallengeHandler, ChallengeType
+from .scoring import (
+    SessionStore,
+)
+from .scoring import penalize as _p
+from .scoring import (
+    rounded,
+    run_checks,
+    score_token,
+    verify_token,
+)
 
 _CATEGORIES = [
     "automation",
@@ -41,17 +45,7 @@ _CATEGORIES = [
 
 
 def _bits(n: int) -> int:
-    n &= 0xFFFFFFFF
-    c = 0
-    while n:
-        c += n & 1
-        n >>= 1
-    return c
-
-
-def _p(s: dict, a: float, r: str) -> None:
-    s["score"] = max(0.0, s["score"] - a)
-    s["flags"].append(r)
+    return bin(n & 0xFFFFFFFF).count("1")
 
 
 def _check_automation(sig: dict, s: dict) -> None:
@@ -461,60 +455,32 @@ def _check_headers(headers: dict, s: dict) -> None:
         _p(s, 0.08, "headers:non-standard UA")
 
 
-_CHECKS = [
-    _check_automation,
-    _check_browser,
-    _check_properties,
-    _check_natives,
-    _check_features,
-    _check_navigator,
-    _check_screen,
-    _check_engine,
-    _check_media_queries,
-    _check_environment,
-    _check_timing,
-    _check_webgl,
-    _check_canvas,
-    _check_fonts,
-    _check_headless,
-    _check_vm,
-    _check_consistency,
-    _check_devtools,
-    _check_cdp,
-    _check_css_version,
-    _check_voices,
-    _check_performance,
-    _check_prototype,
-    _check_drawing,
-    _check_cross_validation,
-]
-
-_CATEGORY_MAP: dict[str, list] = {
-    "automation": [_check_automation],
-    "browser": [_check_browser],
-    "properties": [_check_properties],
-    "natives": [_check_natives],
-    "features": [_check_features],
-    "navigator": [_check_navigator],
-    "screen": [_check_screen],
-    "engine": [_check_engine],
-    "mediaQueries": [_check_media_queries],
-    "environment": [_check_environment],
-    "timing": [_check_timing],
-    "webgl": [_check_webgl],
-    "canvas": [_check_canvas],
-    "fonts": [_check_fonts],
-    "headless": [_check_headless],
-    "vm": [_check_vm],
-    "consistency": [_check_consistency],
-    "devtools": [_check_devtools],
-    "cdp": [_check_cdp],
-    "cssVersion": [_check_css_version],
-    "voices": [_check_voices],
-    "performance": [_check_performance],
-    "prototype": [_check_prototype],
-    "drawing": [_check_drawing],
-    "crossValidation": [_check_cross_validation],
+_CHECKS = {
+    "automation": _check_automation,
+    "browser": _check_browser,
+    "properties": _check_properties,
+    "natives": _check_natives,
+    "features": _check_features,
+    "navigator": _check_navigator,
+    "screen": _check_screen,
+    "engine": _check_engine,
+    "mediaQueries": _check_media_queries,
+    "environment": _check_environment,
+    "timing": _check_timing,
+    "webgl": _check_webgl,
+    "canvas": _check_canvas,
+    "fonts": _check_fonts,
+    "headless": _check_headless,
+    "vm": _check_vm,
+    "consistency": _check_consistency,
+    "devtools": _check_devtools,
+    "cdp": _check_cdp,
+    "cssVersion": _check_css_version,
+    "voices": _check_voices,
+    "performance": _check_performance,
+    "prototype": _check_prototype,
+    "drawing": _check_drawing,
+    "crossValidation": _check_cross_validation,
 }
 
 
@@ -529,54 +495,22 @@ def _classify(score: float) -> str:
 
 
 def validate_signals(signals: dict, headers: dict | None = None) -> dict:
-    s = {"score": 1.0, "flags": []}
-    for check in _CHECKS:
-        check(signals, s)
+    categories = {name: run_checks([check], signals) for name, check in _CHECKS.items()}
     if headers:
-        _check_headers(headers, s)
-    score = round(s["score"] * 10000) / 10000
-    cats: dict = {}
-    for name, checks in _CATEGORY_MAP.items():
-        cs = {"score": 1.0, "flags": []}
-        for check in checks:
-            check(signals, cs)
-        cats[name] = {"score": round(cs["score"] * 10000) / 10000, "flags": cs["flags"]}
-    if headers:
-        hs = {"score": 1.0, "flags": []}
-        _check_headers(headers, hs)
-        cats["headers"] = {
-            "score": round(hs["score"] * 10000) / 10000,
-            "flags": hs["flags"],
-        }
+        categories["headers"] = run_checks([_check_headers], headers)
+
+    penalty = sum(1.0 - state["score"] for state in categories.values())
+    score = rounded(max(0.0, 1.0 - penalty))
+
     return {
         "score": score,
-        "flags": s["flags"],
+        "flags": [flag for state in categories.values() for flag in state["flags"]],
         "verdict": _classify(score),
-        "categoryScores": cats,
+        "categoryScores": {
+            name: {"score": rounded(state["score"]), "flags": state["flags"]}
+            for name, state in categories.items()
+        },
     }
-
-
-def _b64(data: bytes) -> str:
-    return urlsafe_b64encode(data).rstrip(b"=").decode()
-
-
-def _sign_token(payload: dict, secret: bytes) -> str:
-    j = json.dumps(payload, separators=(",", ":"), sort_keys=True)
-    sig = _hmac.new(secret, j.encode(), hashlib.sha256).hexdigest()
-    return f"{_b64(j.encode())}.{sig}"
-
-
-def _verify_token(token: str, secret: bytes) -> dict | None:
-    try:
-        dot = token.index(".")
-        payload_b64, sig = token[:dot], token[dot + 1 :]
-        j = urlsafe_b64decode(payload_b64 + "==").decode()
-        expected = _hmac.new(secret, j.encode(), hashlib.sha256).hexdigest()
-        if not _hmac.compare_digest(sig, expected):
-            return None
-        return json.loads(j)
-    except Exception:
-        return None
 
 
 @dataclass
@@ -611,13 +545,11 @@ def _next_msg(session: _Session) -> dict:
 
 
 def _process(session: _Session, message: dict, challenge: ChallengeBase) -> dict:
-    nonce = message.get("nonce")
-    round_num = message.get("round")
     signals = message.get("signals") or {}
 
-    if nonce != session.nonces[session.current_round]:
+    if message.get("nonce") != session.nonces[session.current_round]:
         return {"type": "error", "reason": "invalid nonce"}
-    if round_num != session.current_round + 1:
+    if message.get("round") != session.current_round + 1:
         return {"type": "error", "reason": "wrong round"}
 
     session.all_signals.update(signals)
@@ -627,13 +559,10 @@ def _process(session: _Session, message: dict, challenge: ChallengeBase) -> dict
         return _next_msg(session)
 
     result = validate_signals(session.all_signals)
-    token = _sign_token(
-        {
-            "score": result["score"],
-            "verdict": result["verdict"],
-            "exp": int(time.time() + 300),
-        },
+    token = score_token(
+        result["score"],
         challenge.random_data.encode(),
+        verdict=result["verdict"],
     )
     return {"type": "result", "token": token}
 
@@ -641,37 +570,42 @@ def _process(session: _Session, message: dict, challenge: ChallengeBase) -> dict
 class NavigatorAttestation(ChallengeHandler):
     ROUND_COUNT = 3
     ROUND_TIMEOUT = 45
+    MIN_SCORE = 0.5
 
     def __init__(self) -> None:
-        self._sessions: dict[str, _Session] = {}
-        self._lock = Lock()
+        self._sessions = SessionStore(self.ROUND_TIMEOUT)
 
     @property
     def challenge_type(self) -> ChallengeType:
         return ChallengeType.NAVIGATOR_ATTESTATION
 
-    def to_difficulty(self, base: int) -> int:
-        return base
-
-    @property
-    def template(self) -> str:
-        return (
-            Path(__file__).parent / "templates" / "navigator_attestation.html"
-        ).read_text()
-
     def generate_random_data(self, difficulty: int = 0) -> str:
         return secrets.token_hex(32)
 
     def verify(self, random_data: str, nonce: int | str, difficulty: int) -> bool:
-        payload = _verify_token(str(nonce), random_data.encode())
+        payload = verify_token(str(nonce), random_data.encode())
         if not payload or time.time() > payload.get("exp", 0):
             return False
-        threshold = min(0.85, max(0.5, 0.5 + (difficulty - 5) * 0.02))
+        threshold = min(
+            0.85, max(self.MIN_SCORE, self.MIN_SCORE + (difficulty - 5) * 0.02)
+        )
         return payload.get("score", 0) >= threshold
 
     def jwt_extra(self, random_data: str, nonce: int | str) -> dict:
-        payload = _verify_token(str(nonce), random_data.encode())
+        payload = verify_token(str(nonce), random_data.encode())
         return {"score": payload["score"]} if payload else {}
+
+    def nonce_from_form(self, raw: str) -> str:
+        return raw
+
+    def render_payload(
+        self, challenge: ChallengeBase, verify_path: str, redirect: str
+    ) -> dict:
+        return {"id": challenge.id, "verifyPath": verify_path, "redirect": redirect}
+
+    @property
+    def supports_http_poll(self) -> bool:
+        return True
 
     def handle_http_poll(self, body: dict, engine) -> dict:
         challenge_id = body.get("id", "")
@@ -687,13 +621,10 @@ class NavigatorAttestation(ChallengeHandler):
             session = _Session(
                 id=challenge_id, rounds=_split_rounds(_CATEGORIES, self.ROUND_COUNT)
             )
-            with self._lock:
-                self._evict_sessions()
-                self._sessions[challenge_id] = session
+            self._sessions.start(challenge_id, session)
             return _next_msg(session)
 
-        with self._lock:
-            session = self._sessions.get(challenge_id)
+        session = self._sessions.get(challenge_id)
         if not session:
             return {"type": "error", "reason": "no session"}
 
@@ -703,88 +634,5 @@ class NavigatorAttestation(ChallengeHandler):
 
         response = _process(session, body, challenge)
         if response["type"] in ("result", "error"):
-            with self._lock:
-                self._sessions.pop(challenge_id, None)
+            self._sessions.drop(challenge_id)
         return response
-
-    def _evict_sessions(self) -> None:
-        cutoff = time.monotonic() - self.ROUND_TIMEOUT
-        for k in [k for k, v in self._sessions.items() if v.started_at < cutoff]:
-            del self._sessions[k]
-
-    def nonce_from_form(self, raw: str) -> str:
-        return raw
-
-    def render_payload(
-        self, challenge: ChallengeBase, verify_path: str, redirect: str
-    ) -> dict:
-        return {
-            "id": challenge.id,
-            "verifyPath": verify_path,
-            "redirect": redirect,
-        }
-
-    @property
-    def supports_websocket(self) -> bool:
-        return True
-
-    @property
-    def supports_http_poll(self) -> bool:
-        return True
-
-    async def handle_websocket(self, scope, receive, send, engine) -> None:
-        from urllib.parse import parse_qs
-
-        query = scope.get("query_string", b"").decode()
-        challenge_id = parse_qs(query).get("id", [""])[0]
-        challenge = engine.store.get(challenge_id) if challenge_id else None
-
-        await send({"type": "websocket.accept"})
-
-        if (
-            not challenge
-            or challenge.spent
-            or challenge.challenge_type != ChallengeType.NAVIGATOR_ATTESTATION
-        ):
-            await _ws_send(send, {"type": "error", "reason": "invalid challenge"})
-            await send({"type": "websocket.close", "code": 4001})
-            return
-
-        session = _Session(
-            id=challenge_id,
-            rounds=_split_rounds(_CATEGORIES, self.ROUND_COUNT),
-        )
-        await _ws_send(send, _next_msg(session))
-
-        deadline = time.monotonic() + self.ROUND_TIMEOUT
-
-        while True:
-            if time.monotonic() > deadline:
-                await send({"type": "websocket.close", "code": 4001})
-                return
-
-            msg = await receive()
-            if msg["type"] == "websocket.disconnect":
-                return
-            if msg["type"] != "websocket.receive":
-                continue
-
-            try:
-                data = json.loads(msg.get("text") or (msg.get("bytes") or b"").decode())
-            except Exception:
-                await _ws_send(send, {"type": "error", "reason": "invalid message"})
-                await send({"type": "websocket.close", "code": 4003})
-                return
-
-            response = _process(session, data, challenge)
-            await _ws_send(send, response)
-
-            if response["type"] == "result":
-                return
-            if response["type"] == "error":
-                await send({"type": "websocket.close", "code": 4002})
-                return
-
-
-async def _ws_send(send, data: dict) -> None:
-    await send({"type": "websocket.send", "text": json.dumps(data)})

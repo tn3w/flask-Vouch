@@ -11,7 +11,7 @@ from dataclasses import dataclass, field
 from functools import lru_cache
 from pathlib import Path
 from threading import Lock
-from typing import TYPE_CHECKING, TypedDict, Unpack
+from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, Unpack
 
 if TYPE_CHECKING:
     from flask_vouch.netset import NetSet
@@ -119,6 +119,7 @@ def crawler_name(user_agent: str) -> str | None:
     head = user_agent.split(None, 1)[0] if user_agent else ""
     return head.split("/", 1)[0] or None
 
+
 COOKIE_NAME = "_tollbooth"
 VERIFY_PATH = "/.tollbooth/verify"
 CHALLENGE_TTL = 1800
@@ -153,6 +154,8 @@ class Request(TypedDict):
     cookies: dict[str, str]
     form: dict[str, str]
     secure: bool
+    json: NotRequired[Any]
+    _claims: NotRequired[Any]
 
 
 def _b64url_encode(data: bytes) -> str:
@@ -166,27 +169,27 @@ def _b64url_decode(s: str) -> bytes:
 _JWT_HEADER = _b64url_encode(b'{"alg":"HS256","typ":"JWT"}')
 
 
+def _meta_keystream(secret: bytes, length: int) -> bytes:
+    key = hmac.new(secret, b"tbmeta", hashlib.sha256).digest()
+    blocks = [
+        hmac.new(key, i.to_bytes(4, "big"), hashlib.sha256).digest()
+        for i in range(-(-length // 32))
+    ]
+    return b"".join(blocks)[:length]
+
+
+def _meta_xor(data: bytes, secret: bytes) -> bytes:
+    return bytes(a ^ b for a, b in zip(data, _meta_keystream(secret, len(data))))
+
+
 def _meta_encrypt(data: dict, secret: bytes) -> str:
     plaintext = json.dumps(data, separators=(",", ":")).encode()
-    key = hmac.new(secret, b"tbmeta", hashlib.sha256).digest()
-    n = len(plaintext)
-    keystream = b"".join(
-        hmac.new(key, i.to_bytes(4, "big"), hashlib.sha256).digest()
-        for i in range(-(-n // 32))
-    )[:n]
-    return _b64url_encode(bytes(a ^ b for a, b in zip(plaintext, keystream)))
+    return _b64url_encode(_meta_xor(plaintext, secret))
 
 
 def _meta_decrypt(s: str, secret: bytes) -> dict | None:
     try:
-        ct = _b64url_decode(s)
-        key = hmac.new(secret, b"tbmeta", hashlib.sha256).digest()
-        n = len(ct)
-        keystream = b"".join(
-            hmac.new(key, i.to_bytes(4, "big"), hashlib.sha256).digest()
-            for i in range(-(-n // 32))
-        )[:n]
-        return json.loads(bytes(a ^ b for a, b in zip(ct, keystream)))
+        return json.loads(_meta_xor(_b64url_decode(s), secret))
     except Exception:
         return None
 
@@ -598,30 +601,22 @@ class Engine:
             return False
 
     def generate_client_id(self, request: Request) -> str:
+        headers = request["headers"]
+
+        def header(name: str) -> str:
+            return headers.get(name, headers.get(name.lower(), ""))
+
         parts = [
             request["remote_addr"],
             request["user_agent"],
-            request["headers"].get("Accept-Language", ""),
-            request["headers"].get("Accept-Encoding", ""),
-            request["headers"].get(
-                "Sec-Ch-Ua", request["headers"].get("sec-ch-ua", "")
-            ),
-            request["headers"].get(
-                "Sec-Ch-Ua-Platform",
-                request["headers"].get("sec-ch-ua-platform", ""),
-            ),
+            header("Accept-Language"),
+            header("Accept-Encoding"),
+            header("Sec-Ch-Ua"),
+            header("Sec-Ch-Ua-Platform"),
+            header("X-Tls-Version"),
+            header("X-Tls-Cipher"),
         ]
-        tls_version = request["headers"].get(
-            "X-Tls-Version",
-            request["headers"].get("x-tls-version", ""),
-        )
-        tls_cipher = request["headers"].get(
-            "X-Tls-Cipher",
-            request["headers"].get("x-tls-cipher", ""),
-        )
-        parts.extend([tls_version, tls_cipher])
-        raw = "|".join(parts)
-        return self._hmac(f"client_id:{raw}".encode()).hex()[:32]
+        return self._hmac(f"client_id:{'|'.join(parts)}".encode()).hex()[:32]
 
     def check_cookie(
         self,
@@ -768,91 +763,3 @@ class Engine:
             )
             html = html.replace(f"{{{{{key}}}}}", safe_value)
         return html
-
-    def process(
-        self,
-        request: Request,
-    ) -> tuple[str, int, dict[str, str], str]:
-        cookie = request["cookies"].get(self.policy.cookie_name)
-        if cookie:
-            claims = self.check_cookie(cookie, request)
-            if claims and self.check_token_limit(claims["cid"]):
-                return "pass", 0, {}, ""
-
-        action, difficulty, _ = self.policy.evaluate(
-            request,
-            self.blocklist,
-        )
-
-        if action == "allow":
-            return "pass", 0, {}, ""
-        if action == "deny":
-            return (
-                "deny",
-                403,
-                {"Content-Type": "text/plain"},
-                "Forbidden",
-            )
-
-        ip_hash = self._hash_ip(request["remote_addr"])
-        if not self._rate_limiter.hit(
-            f"gen:{ip_hash}",
-            self.policy.max_challenge_requests,
-            self.policy.rate_limit_window,
-        ):
-            return "deny", 403, {"Content-Type": "text/plain"}, "Too Many Requests"
-
-        challenge = self.issue_challenge(difficulty, request)
-        body = self.render_challenge(challenge, request["path"], request)
-        return "challenge", 200, _challenge_headers(self.policy.challenge_handler), body
-
-    def handle_verify(
-        self,
-        request: Request,
-    ) -> tuple[int, dict[str, str], str]:
-        form = request["form"]
-        nonce = form.get("nonce") or ",".join(
-            filter(None, [form.get("nonce.x", ""), form.get("nonce.y", "")])
-        )
-        csrf_token = form.get("csrf_token", "")
-        token = self.validate_challenge(form.get("id", ""), nonce, request, csrf_token)
-
-        if not token:
-            ip_hash = self._hash_ip(request["remote_addr"])
-            if not self._rate_limiter.hit(
-                f"fail:{ip_hash}",
-                self.policy.max_challenge_failures,
-                self.policy.rate_limit_window,
-            ):
-                return 403, {"Content-Type": "text/plain"}, "Too Many Requests"
-
-            if self.policy.challenge_handler.retry_on_failure:
-                redirect = _safe_redirect(form.get("redirect", "/"))
-                challenge = self.issue_challenge(
-                    self.policy.default_difficulty, request
-                )
-                body = self.render_challenge(
-                    challenge,
-                    redirect,
-                    request,
-                    error='<p class="error">Incorrect \u2014 try again.</p>',
-                )
-                return 200, _challenge_headers(self.policy.challenge_handler), body
-            return 403, {"Content-Type": "text/plain"}, "Invalid"
-
-        redirect = _safe_redirect(form.get("redirect", "/"))
-
-        cookie = (
-            f"{self.policy.cookie_name}={token}; "
-            f"Path=/; HttpOnly; SameSite=Strict; "
-            f"Secure; Max-Age={self.policy.cookie_ttl}"
-        )
-
-        return (
-            302,
-            {
-                "Location": redirect,
-                "Set-Cookie": cookie,
-            },
-            "",
-        )

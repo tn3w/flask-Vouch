@@ -2,7 +2,7 @@
 
 # 𐌅𐌋𐌀𐌔𐌊-ᕓꝊ𐌵𐌂𐋅
 
-Bot-challenge middleware for Flask intercepts unrecognized visitors, issues proof-of-work or CAPTCHA challenges, and grants HMAC-signed JWT access cookies to solvers.
+Bot-challenge middleware for Flask. Intercepts unrecognized visitors, issues proof-of-work or CAPTCHA challenges, and grants HMAC-signed JWT access cookies to solvers.
 
 [![PyPI](https://img.shields.io/pypi/v/flask-Vouch?style=flat-square)](https://pypi.org/project/flask-Vouch/)
 [![Python](https://img.shields.io/pypi/pyversions/flask-Vouch?style=flat-square)](https://pypi.org/project/flask-Vouch/)
@@ -178,6 +178,35 @@ from flask_vouch import (
 
 vouch = Vouch(app, secret="s", challenge_handler=CharacterCaptcha())
 ```
+
+### Custom handlers
+
+Subclass `ChallengeHandler`, only `challenge_type`, `verify` and `render_payload`
+are required. `to_difficulty` applies the type's offset from `DIFFICULTY_OFFSETS`
+and `template` reads `challenges/templates/<challenge-type>.html`; override either
+one to change that.
+
+```python
+from flask_vouch.challenges import ChallengeHandler, ChallengeType
+
+class MyChallenge(ChallengeHandler):
+    @property
+    def challenge_type(self):
+        return ChallengeType.SHA256
+
+    def verify(self, random_data, nonce, difficulty):
+        return str(nonce) == random_data[:4]
+
+    def render_payload(self, challenge, verify_path, redirect):
+        return {"id": challenge.id, "verifyPath": verify_path, "redirect": redirect}
+```
+
+CAPTCHAs that must hand the browser a page while keeping the answer server-side
+subclass `SignedTokenHandler`: `issue_token(solution)` returns the encrypted,
+HMAC-signed, expiring string stored as the challenge's `random_data`, and
+`read_token(token)` returns the solution back (raising once `token_ttl` passes).
+Handlers that render media additionally keep it in a `RenderCache` between
+`generate_random_data` and `render_payload`.
 
 ## IP netset
 

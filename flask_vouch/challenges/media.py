@@ -1,5 +1,75 @@
+import math
+import secrets
 from concurrent.futures import ThreadPoolExecutor
 from io import BytesIO
+
+
+def rand_color(lo: int, hi: int) -> tuple[int, int, int]:
+    span = hi - lo
+    return (
+        secrets.randbelow(span) + lo,
+        secrets.randbelow(span) + lo,
+        secrets.randbelow(span) + lo,
+    )
+
+
+def cube(size: int):
+    verts = [
+        (x * size, y * size, z * size)
+        for x in (-1, 1)
+        for y in (-1, 1)
+        for z in (-1, 1)
+    ]
+    edges = [
+        (i, j)
+        for i in range(8)
+        for j in range(i + 1, 8)
+        if sum(1 for k in range(3) if verts[i][k] != verts[j][k]) == 1
+    ]
+    return verts, edges
+
+
+def pyramid(base: int, height: int):
+    verts = [
+        (-base, height, -base),
+        (base, height, -base),
+        (base, height, base),
+        (-base, height, base),
+        (0, -base, 0),
+    ]
+    edges = [(0, 1), (1, 2), (2, 3), (3, 0), (0, 4), (1, 4), (2, 4), (3, 4)]
+    return verts, edges
+
+
+def _rotate(point, rx, ry, rz):
+    x, y, z = point
+    cy, sy = math.cos(ry), math.sin(ry)
+    x, z = cy * x + sy * z, -sy * x + cy * z
+    cx, sx = math.cos(rx), math.sin(rx)
+    y, z = cx * y - sx * z, sx * y + cx * z
+    cz, sz = math.cos(rz), math.sin(rz)
+    return cz * x - sz * y, sz * x + cz * y, z
+
+
+def _project(x, y, z, focal=300):
+    depth = z + focal
+    return (x * focal / depth, y * focal / depth) if depth else (0.0, 0.0)
+
+
+def draw_wireframes(draw, placements, color_range: tuple[int, int]) -> None:
+    for verts, edges, ox, oy in placements:
+        angles = [math.radians(secrets.randbelow(360)) for _ in range(3)]
+        points = [_project(*_rotate(v, *angles)) for v in verts]
+        color = rand_color(*color_range)
+        for a, b in edges:
+            draw.line(
+                [
+                    (int(points[a][0] + ox), int(points[a][1] + oy)),
+                    (int(points[b][0] + ox), int(points[b][1] + oy)),
+                ],
+                fill=color,
+                width=1,
+            )
 
 
 def distort_images(
@@ -24,7 +94,7 @@ def distort_image(image_data: bytes, size: int = 100, hardness: int = 1) -> byte
     rng = np.random.default_rng()
 
     img = Image.open(BytesIO(image_data)).convert("RGB")
-    img = img.resize((size, size), Image.LANCZOS)
+    img = img.resize((size, size), Image.Resampling.LANCZOS)
     arr = np.array(img, dtype=np.int16)
 
     noise_max = max(2, 1 + hardness // 2)

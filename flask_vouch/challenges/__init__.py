@@ -1,11 +1,16 @@
 from .audio_captcha import AudioCaptcha
-from .base import DIFFICULTY_OFFSETS, ChallengeBase, ChallengeHandler, ChallengeType
+from .base import (
+    DIFFICULTY_OFFSETS,
+    ChallengeBase,
+    ChallengeHandler,
+    ChallengeType,
+    SignedTokenHandler,
+)
 from .chain_captcha import ChainCaptcha
 from .character_captcha import CharacterCaptcha
 from .circle_captcha import CircleCaptcha
 from .cup_captcha import CupCaptcha
-from .image_captcha import ImageCaptcha
-from .image_grid_captcha import ImageGridCaptcha
+from .image_captcha import ImageCaptcha, ImageGridCaptcha
 from .navigator_attestation import NavigatorAttestation, validate_signals
 from .quirk_probe import QuirkProbe
 from .rotation_captcha import RotationCaptcha
@@ -20,6 +25,7 @@ __all__ = [
     "ChallengeBase",
     "ChallengeHandler",
     "ChallengeType",
+    "SignedTokenHandler",
     "DIFFICULTY_OFFSETS",
     "ChainCaptcha",
     "CharacterCaptcha",

@@ -2,7 +2,6 @@ import html
 import json
 import secrets
 from dataclasses import dataclass
-from pathlib import Path
 
 from flask_vouch.extras.third_party_captcha import (
     _ALTCHA_CDN,
@@ -16,7 +15,7 @@ from flask_vouch.extras.third_party_captcha import (
     _call_provider_api,
 )
 
-from .base import DIFFICULTY_OFFSETS, ChallengeBase, ChallengeHandler, ChallengeType
+from .base import ChallengeBase, ChallengeHandler, ChallengeType
 
 _PROVIDER_CSP = {
     "recaptcha": (
@@ -115,15 +114,6 @@ class ThirdPartyCaptchaChallenge(ChallengeHandler):
     @property
     def challenge_type(self) -> ChallengeType:
         return ChallengeType.THIRD_PARTY_CAPTCHA
-
-    def to_difficulty(self, base: int) -> int:
-        return base + DIFFICULTY_OFFSETS[self.challenge_type]
-
-    @property
-    def template(self) -> str:
-        return (
-            Path(__file__).parent / "templates" / "third_party_captcha.html"
-        ).read_text()
 
     def generate_random_data(self, difficulty: int = 0) -> str:
         return secrets.token_hex(32)

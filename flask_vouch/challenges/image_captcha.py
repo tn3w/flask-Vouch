@@ -1,18 +1,9 @@
 import base64
-import hashlib
-import hmac
-import secrets
-import time
 from dataclasses import dataclass, field
-from pathlib import Path
-from threading import Lock
 
-from .base import DIFFICULTY_OFFSETS, ChallengeBase, ChallengeHandler, ChallengeType
+from .base import ChallengeBase, ChallengeType, RenderCache, SignedTokenHandler
 from .datasets import get_default_store
 from .media import distort_image, distort_images
-
-_TOKEN_TTL = 1800
-_RENDER_CACHE_SIZE = 64
 
 
 def _img_data_url(data: bytes) -> str:
@@ -20,123 +11,60 @@ def _img_data_url(data: bytes) -> str:
 
 
 @dataclass
-class ImageCaptcha(ChallengeHandler):
+class _ImageCaptchaBase(SignedTokenHandler):
     dataset: str = "ai_dogs"
-    token_ttl: int = _TOKEN_TTL
-    secret: bytes = field(
-        default_factory=lambda: secrets.token_bytes(32),
-    )
+    cache: RenderCache = field(default_factory=RenderCache)
 
-    def __post_init__(self):
-        self._cache: dict[str, dict] = {}
-        self._cache_lock = Lock()
+    def _load_images(self, count: int, correct_range, preview: bool):
+        images, correct_indices, category = get_default_store().get_images(
+            count=count,
+            correct_range=correct_range,
+            dataset=self.dataset,
+            preview=preview,
+        )
+        if not images:
+            raise RuntimeError(f"failed to load dataset '{self.dataset}'")
+        return images, correct_indices, category
 
+    def _cached(self, challenge: ChallengeBase) -> dict:
+        cached = self.cache.pop(challenge.random_data)
+        if not cached:
+            raise RuntimeError("image cache expired")
+        return cached
+
+    @staticmethod
+    def _with_grid(payload: dict, grid: list[str]) -> dict:
+        return {**payload, **{f"grid_{i}": url for i, url in enumerate(grid)}}
+
+
+@dataclass
+class ImageCaptcha(_ImageCaptchaBase):
     @property
     def challenge_type(self) -> ChallengeType:
         return ChallengeType.IMAGE_CAPTCHA
 
-    def to_difficulty(self, base: int) -> int:
-        return base + DIFFICULTY_OFFSETS[self.challenge_type]
-
-    @property
-    def template(self) -> str:
-        return (Path(__file__).parent / "templates" / "image_captcha.html").read_text()
-
-    def _sign(self, payload: str) -> str:
-        return hmac.new(
-            self.secret,
-            payload.encode(),
-            hashlib.sha256,
-        ).hexdigest()
-
-    def _encrypt(self, plaintext: str, iv: str) -> str:
-        key = hmac.new(
-            self.secret,
-            iv.encode(),
-            hashlib.sha256,
-        ).digest()
-        stream = key * (len(plaintext) // len(key) + 1)
-        return bytes(a ^ b for a, b in zip(plaintext.encode(), stream)).hex()
-
-    def _decrypt_token(self, token: str) -> str:
-        iv, ct_hex, ts, nonce, sig = token.split(":")
-        payload = f"{iv}:{ct_hex}:{ts}:{nonce}"
-
-        if not hmac.compare_digest(self._sign(payload), sig):
-            raise ValueError("invalid signature")
-
-        if time.time() - int(ts) > self.token_ttl:
-            raise ValueError("token expired")
-
-        key = hmac.new(
-            self.secret,
-            iv.encode(),
-            hashlib.sha256,
-        ).digest()
-        ct = bytes.fromhex(ct_hex)
-        stream = key * (len(ct) // len(key) + 1)
-        return bytes(a ^ b for a, b in zip(ct, stream)).decode()
-
-    def _evict_cache(self):
-        while len(self._cache) > _RENDER_CACHE_SIZE:
-            oldest = min(
-                self._cache,
-                key=lambda k: self._cache[k]["ts"],
-            )
-            del self._cache[oldest]
-
     def generate_random_data(self, difficulty: int = 0) -> str:
-        store = get_default_store()
-        images, correct_indices, _ = store.get_images(
-            count=6,
-            correct_range=(1, 1),
-            dataset=self.dataset,
-            preview=True,
-        )
-        if not images:
-            raise RuntimeError(f"failed to load dataset '{self.dataset}'")
-
+        images, correct_indices, _ = self._load_images(6, (1, 1), preview=True)
         hardness = max(1, min(difficulty, 5))
 
-        preview = _img_data_url(distort_image(images[0], size=200, hardness=hardness))
-        grid = [
-            _img_data_url(d)
-            for d in distort_images(images[1:], size=100, hardness=hardness)
-        ]
+        token = self.issue_token(correct_indices)
+        self.cache.put(
+            token,
+            {
+                "preview": _img_data_url(
+                    distort_image(images[0], size=200, hardness=hardness)
+                ),
+                "grid": [
+                    _img_data_url(d)
+                    for d in distort_images(images[1:], size=100, hardness=hardness)
+                ],
+            },
+        )
+        return token
 
-        iv = secrets.token_hex(16)
-        ct = self._encrypt(correct_indices, iv)
-        ts = str(int(time.time()))
-        nonce = secrets.token_hex(8)
-        payload = f"{iv}:{ct}:{ts}:{nonce}"
-        signed = f"{payload}:{self._sign(payload)}"
-
-        with self._cache_lock:
-            self._evict_cache()
-            self._cache[signed] = {
-                "preview": preview,
-                "grid": grid,
-                "ts": time.time(),
-            }
-
-        return signed
-
-    @property
-    def retry_on_failure(self) -> bool:
-        return True
-
-    def nonce_from_form(self, raw: str) -> str:
-        return raw.strip()
-
-    def verify(
-        self,
-        random_data: str,
-        nonce: int | str,
-        difficulty: int,
-    ) -> bool:
+    def verify(self, random_data: str, nonce: int | str, difficulty: int) -> bool:
         try:
-            correct = self._decrypt_token(random_data)
-            return str(nonce) == correct
+            return str(nonce) == self.read_token(random_data)
         except Exception:
             return False
 
@@ -146,22 +74,64 @@ class ImageCaptcha(ChallengeHandler):
         verify_path: str,
         redirect: str,
     ) -> dict:
-        with self._cache_lock:
-            cached = self._cache.pop(
-                challenge.random_data,
-                None,
-            )
+        cached = self._cached(challenge)
+        return self._with_grid(
+            {
+                "id": challenge.id,
+                "preview": cached["preview"],
+                "verifyPath": verify_path,
+                "redirect": redirect,
+            },
+            cached["grid"],
+        )
 
-        if not cached:
-            raise RuntimeError("image cache expired")
 
-        result = {
-            "id": challenge.id,
-            "preview": cached["preview"],
-            "verifyPath": verify_path,
-            "redirect": redirect,
-        }
-        for i, url in enumerate(cached["grid"]):
-            result[f"grid_{i}"] = url
+@dataclass
+class ImageGridCaptcha(_ImageCaptchaBase):
+    @property
+    def challenge_type(self) -> ChallengeType:
+        return ChallengeType.IMAGE_GRID_CAPTCHA
 
-        return result
+    def generate_random_data(self, difficulty: int = 0) -> str:
+        images, correct_indices, category = self._load_images(9, (2, 4), preview=False)
+        hardness = max(1, min(difficulty, 5))
+
+        token = self.issue_token(correct_indices, suffix=f":{category}")
+        self.cache.put(
+            token,
+            {
+                "category": category,
+                "grid": [
+                    _img_data_url(d)
+                    for d in distort_images(images, size=100, hardness=hardness)
+                ],
+            },
+        )
+        return token
+
+    def nonce_from_form(self, raw: str) -> str:
+        return "".join(sorted(set(raw.replace(",", ""))))
+
+    def verify(self, random_data: str, nonce: int | str, difficulty: int) -> bool:
+        try:
+            correct = self.read_token(random_data)
+        except Exception:
+            return False
+        return "".join(sorted(str(nonce))) == "".join(sorted(correct))
+
+    def render_payload(
+        self,
+        challenge: ChallengeBase,
+        verify_path: str,
+        redirect: str,
+    ) -> dict:
+        cached = self._cached(challenge)
+        return self._with_grid(
+            {
+                "id": challenge.id,
+                "category": cached["category"],
+                "verifyPath": verify_path,
+                "redirect": redirect,
+            },
+            cached["grid"],
+        )

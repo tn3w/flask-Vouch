@@ -1,18 +1,14 @@
 import base64
-import hashlib
-import hmac
 import math
 import random
 import secrets
 import struct
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 
-from .base import DIFFICULTY_OFFSETS, ChallengeBase, ChallengeHandler, ChallengeType
+from .base import ChallengeBase, ChallengeType, SignedTokenHandler
 
-_TOKEN_TTL = 1800
 _MODELS_DIR = Path(__file__).parent / "models"
 _ICON_CACHE_PATH = _MODELS_DIR / "icon_cache.bin"
 
@@ -146,6 +142,7 @@ def _wood_background(width: int, height: int, rng: random.Random):
 
     img = Image.new("RGBA", (width, height))
     pixels = img.load()
+    assert pixels is not None
     for y in range(height):
         y_grain = math.sin(y * 0.3) * 0.1 + 0.9
         for x in range(width):
@@ -156,10 +153,6 @@ def _wood_background(width: int, height: int, rng: random.Random):
             b = int(max(0, min(255, 50 * factor)))
             pixels[x, y] = (r, g, b, 255)
     return img
-
-
-def _lerp(a, b, t):
-    return a + (b - a) * t
 
 
 def _draw_cup(img, cx: int, cy: int, w: int, h: int, fill: float, color):
@@ -290,40 +283,14 @@ def _render_reference(
 
 
 @dataclass
-class CupCaptcha(ChallengeHandler):
+class CupCaptcha(SignedTokenHandler):
     min_scenes: int = 5
     max_scenes: int = 9
     image_size: int = 200
-    token_ttl: int = _TOKEN_TTL
-    secret: bytes = field(default_factory=lambda: secrets.token_bytes(32))
 
     @property
     def challenge_type(self) -> ChallengeType:
         return ChallengeType.CUP_CAPTCHA
-
-    def to_difficulty(self, base: int) -> int:
-        return base + DIFFICULTY_OFFSETS[self.challenge_type]
-
-    @property
-    def template(self) -> str:
-        return (Path(__file__).parent / "templates" / "cup_captcha.html").read_text()
-
-    def _sign(self, payload: str) -> str:
-        return hmac.new(self.secret, payload.encode(), hashlib.sha256).hexdigest()
-
-    def _encrypt(self, plaintext: str, iv: str) -> str:
-        key = hmac.new(self.secret, iv.encode(), hashlib.sha256).digest()
-        return bytes(a ^ b for a, b in zip(plaintext.encode(), key)).hex()
-
-    def _decrypt_token(self, token: str) -> str:
-        iv, ct_hex, ts, nonce, sig = token.split(":")
-        payload = f"{iv}:{ct_hex}:{ts}:{nonce}"
-        if not hmac.compare_digest(self._sign(payload), sig):
-            raise ValueError("invalid signature")
-        if time.time() - int(ts) > self.token_ttl:
-            raise ValueError("token expired")
-        key = hmac.new(self.secret, iv.encode(), hashlib.sha256).digest()
-        return bytes(a ^ b for a, b in zip(bytes.fromhex(ct_hex), key)).decode()
 
     def generate_random_data(self, difficulty: int = 0) -> str:
         _, icon_names = _load_icons()
@@ -338,23 +305,11 @@ class CupCaptcha(ChallengeHandler):
         solution = (
             f"{correct_scene}:{scene_count}:{target_icon}:{target_brightness}:{seed}"
         )
-        iv = secrets.token_hex(16)
-        ct = self._encrypt(solution, iv)
-        ts = str(int(time.time()))
-        nonce = secrets.token_hex(8)
-        payload = f"{iv}:{ct}:{ts}:{nonce}"
-        return f"{payload}:{self._sign(payload)}"
-
-    @property
-    def retry_on_failure(self) -> bool:
-        return True
-
-    def nonce_from_form(self, raw: str) -> str:
-        return raw.strip()
+        return self.issue_token(solution)
 
     def verify(self, random_data: str, nonce: int | str, difficulty: int) -> bool:
         try:
-            solution = self._decrypt_token(random_data)
+            solution = self.read_token(random_data)
             correct_scene = int(solution.split(":")[0])
             return int(nonce) == correct_scene
         except Exception:
@@ -366,7 +321,7 @@ class CupCaptcha(ChallengeHandler):
         verify_path: str,
         redirect: str,
     ) -> dict:
-        solution = self._decrypt_token(challenge.random_data)
+        solution = self.read_token(challenge.random_data)
         parts = solution.split(":")
         correct_scene = int(parts[0])
         scene_count = int(parts[1])

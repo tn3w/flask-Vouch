@@ -1,19 +1,19 @@
 import hashlib
-import hmac
-import json
 import secrets
 import time
-from base64 import urlsafe_b64decode, urlsafe_b64encode
 from dataclasses import dataclass, field
-from pathlib import Path
-from threading import Lock
 
 from .base import ChallengeBase, ChallengeHandler, ChallengeType
-
-
-def _fail(state: dict, amount: float, reason: str) -> None:
-    state["score"] = max(0.0, state["score"] - amount)
-    state["flags"].append(reason)
+from .scoring import (
+    SessionStore,
+)
+from .scoring import penalize as _fail
+from .scoring import (
+    rounded,
+    run_checks,
+    score_token,
+    verify_token,
+)
 
 
 def _check_consistency(report: dict, state: dict) -> None:
@@ -23,7 +23,9 @@ def _check_consistency(report: dict, state: dict) -> None:
     offset = text.get("offset")
     computed = text.get("computed")
 
-    values = [v for v in (measure, bbox, offset, computed) if isinstance(v, (int, float))]
+    values = [
+        v for v in (measure, bbox, offset, computed) if isinstance(v, (int, float))
+    ]
     if len(values) < 3:
         _fail(state, 0.4, "consistency:missing text APIs")
         return
@@ -83,11 +85,8 @@ _CHECKS = [_check_consistency, _check_render, _check_compositor]
 
 
 def validate_report(report: dict) -> dict:
-    state = {"score": 1.0, "flags": []}
-    for check in _CHECKS:
-        check(report, state)
-    score = round(state["score"] * 10000) / 10000
-    return {"score": score, "flags": state["flags"]}
+    state = run_checks(_CHECKS, report)
+    return {"score": rounded(state["score"]), "flags": state["flags"]}
 
 
 def build_recipe(salt: str) -> dict:
@@ -108,29 +107,6 @@ def build_recipe(salt: str) -> dict:
     return {"shapes": shapes, "glyphCode": glyph, "checksum": digest[:4].hex()}
 
 
-def _b64(data: bytes) -> str:
-    return urlsafe_b64encode(data).rstrip(b"=").decode()
-
-
-def _sign_token(payload: dict, secret: bytes) -> str:
-    body = json.dumps(payload, separators=(",", ":"), sort_keys=True)
-    sig = hmac.new(secret, body.encode(), hashlib.sha256).hexdigest()
-    return f"{_b64(body.encode())}.{sig}"
-
-
-def _verify_token(token: str, secret: bytes) -> dict | None:
-    try:
-        dot = token.index(".")
-        body_b64, sig = token[:dot], token[dot + 1 :]
-        body = urlsafe_b64decode(body_b64 + "==").decode()
-        expected = hmac.new(secret, body.encode(), hashlib.sha256).hexdigest()
-        if not hmac.compare_digest(sig, expected):
-            return None
-        return json.loads(body)
-    except Exception:
-        return None
-
-
 @dataclass
 class _Session:
     id: str
@@ -141,21 +117,14 @@ class _Session:
 
 class QuirkProbe(ChallengeHandler):
     SESSION_TIMEOUT = 45
+    MIN_SCORE = 0.55
 
     def __init__(self) -> None:
-        self._sessions: dict[str, _Session] = {}
-        self._lock = Lock()
+        self._sessions = SessionStore(self.SESSION_TIMEOUT)
 
     @property
     def challenge_type(self) -> ChallengeType:
         return ChallengeType.QUIRK_PROBE
-
-    def to_difficulty(self, base: int) -> int:
-        return base
-
-    @property
-    def template(self) -> str:
-        return (Path(__file__).parent / "templates" / "quirk_probe.html").read_text()
 
     def generate_random_data(self, difficulty: int = 0) -> str:
         return secrets.token_hex(32)
@@ -164,14 +133,16 @@ class QuirkProbe(ChallengeHandler):
         return raw
 
     def verify(self, random_data: str, nonce: int | str, difficulty: int) -> bool:
-        payload = _verify_token(str(nonce), random_data.encode())
+        payload = verify_token(str(nonce), random_data.encode())
         if not payload or time.time() > payload.get("exp", 0):
             return False
-        threshold = min(0.85, max(0.55, 0.55 + (difficulty - 5) * 0.02))
+        threshold = min(
+            0.85, max(self.MIN_SCORE, self.MIN_SCORE + (difficulty - 5) * 0.02)
+        )
         return payload.get("score", 0) >= threshold
 
     def jwt_extra(self, random_data: str, nonce: int | str) -> dict:
-        payload = _verify_token(str(nonce), random_data.encode())
+        payload = verify_token(str(nonce), random_data.encode())
         return {"score": payload["score"]} if payload else {}
 
     def render_payload(
@@ -202,17 +173,14 @@ class QuirkProbe(ChallengeHandler):
                 salt=challenge.random_data,
                 nonce=secrets.token_hex(16),
             )
-            with self._lock:
-                self._evict()
-                self._sessions[challenge_id] = session
+            self._sessions.start(challenge_id, session)
             return {
                 "type": "recipe",
                 "nonce": session.nonce,
                 "recipe": build_recipe(session.salt),
             }
 
-        with self._lock:
-            session = self._sessions.get(challenge_id)
+        session = self._sessions.get(challenge_id)
         if not session or body.get("nonce") != session.nonce:
             return {"type": "error", "reason": "no session"}
 
@@ -220,17 +188,8 @@ class QuirkProbe(ChallengeHandler):
         if not challenge:
             return {"type": "error", "reason": "invalid challenge"}
 
-        with self._lock:
-            self._sessions.pop(challenge_id, None)
+        self._sessions.drop(challenge_id)
 
         result = validate_report(body.get("report") or {})
-        token = _sign_token(
-            {"score": result["score"], "exp": int(time.time() + 300)},
-            challenge.random_data.encode(),
-        )
+        token = score_token(result["score"], challenge.random_data.encode())
         return {"type": "result", "token": token}
-
-    def _evict(self) -> None:
-        cutoff = time.monotonic() - self.SESSION_TIMEOUT
-        for key in [k for k, v in self._sessions.items() if v.started_at < cutoff]:
-            del self._sessions[key]

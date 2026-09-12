@@ -246,21 +246,22 @@ class TestEngine:
         policy = kwargs.pop("policy", Policy(rules=[]))
         return Engine(secret=SECRET, policy=policy, **kwargs)
 
+    def make_bouncer(self, **kwargs):
+        return Vouch(engine=self.make_engine(**kwargs))
+
     def test_process_allows_normal(self):
-        action, _, _, _ = self.make_engine().process(make_request())
-        assert action == "pass"
+        assert self.make_bouncer().process_request(make_request()) is None
 
     def test_process_denies_bad_bot(self):
-        engine = self.make_engine(
+        bouncer = self.make_bouncer(
             policy=Policy(rules=[Rule(name="bad", action="deny", user_agent="BadBot")])
         )
-        action, status, _, body = engine.process(make_request(user_agent="BadBot/1.0"))
-        assert action == "deny"
-        assert status == 403
-        assert body == "Forbidden"
+        result = bouncer.process_request(make_request(user_agent="BadBot/1.0"))
+        assert result.status == 403
+        assert result.body == "Forbidden"
 
     def test_process_challenges_scraper(self):
-        engine = self.make_engine(
+        bouncer = self.make_bouncer(
             policy=Policy(
                 rules=[
                     Rule(
@@ -269,13 +270,10 @@ class TestEngine:
                 ]
             )
         )
-        action, status, headers, body = engine.process(
-            make_request(user_agent="Scrapy/2.0")
-        )
-        assert action == "challenge"
-        assert status == 200
-        assert "challenge" in body.lower()
-        assert headers["Cache-Control"] == "no-store"
+        result = bouncer.process_request(make_request(user_agent="Scrapy/2.0"))
+        assert result.status == 200
+        assert "challenge" in result.body.lower()
+        assert result.headers["Cache-Control"] == "no-store"
 
     def test_issue_and_validate_challenge(self):
         engine = self.make_engine()

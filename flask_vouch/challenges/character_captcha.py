@@ -1,16 +1,13 @@
 import base64
-import hashlib
-import hmac
 import os
 import secrets
 import sys
-import time
-from dataclasses import dataclass, field
+from dataclasses import dataclass
 from io import BytesIO
 from pathlib import Path
 from typing import cast
 
-from .base import DIFFICULTY_OFFSETS, ChallengeBase, ChallengeHandler, ChallengeType
+from .base import ChallengeBase, ChallengeType, SignedTokenHandler
 
 _CHARS = "ABCDEFGHJKLMNPQRSTUVWXYZ23456789"
 
@@ -93,64 +90,24 @@ def _find_fonts() -> list[str]:
     return _fonts_cache
 
 
-_TOKEN_TTL = 1800
-
-
 @dataclass
-class CharacterCaptcha(ChallengeHandler):
+class CharacterCaptcha(SignedTokenHandler):
     backgrounds_path: str | None = None
-    token_ttl: int = _TOKEN_TTL
-    secret: bytes = field(default_factory=lambda: secrets.token_bytes(32))
 
     @property
     def challenge_type(self) -> ChallengeType:
         return ChallengeType.CHARACTER_CAPTCHA
 
-    def to_difficulty(self, base: int) -> int:
-        return base + DIFFICULTY_OFFSETS[self.challenge_type]
-
-    @property
-    def template(self) -> str:
-        return (
-            Path(__file__).parent / "templates" / "character_captcha.html"
-        ).read_text()
-
-    def _sign(self, payload: str) -> str:
-        return hmac.new(self.secret, payload.encode(), hashlib.sha256).hexdigest()
-
-    def _encrypt(self, plaintext: str, iv: str) -> str:
-        key = hmac.new(self.secret, iv.encode(), hashlib.sha256).digest()
-        return bytes(a ^ b for a, b in zip(plaintext.encode(), key)).hex()
-
-    def _decrypt_token(self, random_data: str) -> str:
-        iv, ct_hex, ts, nonce, sig = random_data.split(":")
-        payload = f"{iv}:{ct_hex}:{ts}:{nonce}"
-        if not hmac.compare_digest(self._sign(payload), sig):
-            raise ValueError("invalid signature")
-        if time.time() - int(ts) > self.token_ttl:
-            raise ValueError("token expired")
-        key = hmac.new(self.secret, iv.encode(), hashlib.sha256).digest()
-        return bytes(a ^ b for a, b in zip(bytes.fromhex(ct_hex), key)).decode()
-
     def generate_random_data(self, difficulty: int = 0) -> str:
         solution = "".join(secrets.choice(_CHARS) for _ in range(max(1, difficulty)))
-        iv = secrets.token_hex(16)
-        ct = self._encrypt(solution, iv)
-        ts = str(int(time.time()))
-        nonce = secrets.token_hex(8)
-        payload = f"{iv}:{ct}:{ts}:{nonce}"
-        return f"{payload}:{self._sign(payload)}"
-
-    @property
-    def retry_on_failure(self) -> bool:
-        return True
+        return self.issue_token(solution)
 
     def nonce_from_form(self, raw: str) -> str:
         return raw.strip().upper()
 
     def verify(self, random_data: str, nonce: int | str, difficulty: int) -> bool:
         try:
-            return self._decrypt_token(random_data).upper() == str(nonce).upper()
+            return self.read_token(random_data).upper() == str(nonce).upper()
         except Exception:
             return False
 
@@ -273,7 +230,7 @@ class CharacterCaptcha(ChallengeHandler):
         verify_path: str,
         redirect: str,
     ) -> dict:
-        solution = self._decrypt_token(challenge.random_data)
+        solution = self.read_token(challenge.random_data)
         image_b64 = base64.b64encode(self._render_image(solution)).decode()
         return {
             "id": challenge.id,
