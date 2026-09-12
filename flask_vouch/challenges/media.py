@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import math
 import secrets
 from concurrent.futures import ThreadPoolExecutor

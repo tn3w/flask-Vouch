@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import html
 import json
 import secrets
 from dataclasses import dataclass
+from pathlib import Path
 
 from flask_vouch.extras.third_party_captcha import (
     _ALTCHA_CDN,
@@ -104,6 +107,7 @@ class ThirdPartyCaptchaChallenge(ChallengeHandler):
     creds: CaptchaCreds | AltchaCreds
     language: str = "auto"
     theme: str = "auto"
+    template: str | Path | None = None
 
     def __post_init__(self):
         if self.provider == "altcha" and isinstance(self.creds, AltchaCreds):

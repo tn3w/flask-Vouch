@@ -1,3 +1,7 @@
+# pyright: reportMissingImports=false
+
+from __future__ import annotations
+
 import base64
 import io
 import secrets
@@ -12,7 +16,7 @@ _SAMPLE_RATE = 44100
 def _ensure_audio_deps():
     try:
         import numpy as np
-        from scipy.io.wavfile import write as write_wav  # pyright: ignore[reportMissingImports]
+        from scipy.io.wavfile import write as write_wav
 
         return np, write_wav
     except ImportError as e:
@@ -44,7 +48,7 @@ def _noise(duration_ms: int, level: float = 0.05):
 
 def _wav_to_samples(wav_bytes: bytes):
     np, _ = _ensure_audio_deps()
-    from scipy.io.wavfile import read as read_wav  # pyright: ignore[reportMissingImports]
+    from scipy.io.wavfile import read as read_wav
 
     buf = io.BytesIO(wav_bytes)
     _, samples = read_wav(buf)
@@ -131,7 +135,7 @@ def _combine_audio(
         ).astype(np.int16)
 
     try:
-        from pydub import AudioSegment  # pyright: ignore[reportMissingImports]
+        from pydub import AudioSegment
 
         wav_buf = io.BytesIO()
         write_wav(wav_buf, _SAMPLE_RATE, combined)

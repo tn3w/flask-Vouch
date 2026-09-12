@@ -1,6 +1,9 @@
+from __future__ import annotations
+
 import hashlib
 import struct
 from dataclasses import dataclass
+from pathlib import Path
 
 from .base import (
     ChallengeBase,
@@ -57,6 +60,7 @@ class SHA256Balloon(ChallengeHandler):
     space_cost: int = 1024
     time_cost: int = 1
     delta: int = 3
+    template: str | Path | None = None
 
     @property
     def challenge_type(self) -> ChallengeType:

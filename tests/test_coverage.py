@@ -1,5 +1,7 @@
 """Additional tests to improve coverage of uncovered lines."""
 
+from __future__ import annotations
+
 import tempfile
 import time
 from pathlib import Path
@@ -14,22 +16,7 @@ from flask_vouch.challenges.base import (
     count_leading_zero_bits,
 )
 from flask_vouch.challenges.sha256 import SHA256
-from flask_vouch.engine import (
-    COOKIE_NAME,
-    Challenge,
-    RateLimiter,
-    Store,
-    TokenTracker,
-    _b64url_encode,
-    _blocklist_match,
-    _challenge_headers,
-    _meta_decrypt,
-    _meta_encrypt,
-    _safe_redirect,
-    crawler_name,
-    is_crawler,
-    load_policy,
-)
+from flask_vouch.crawlers import crawler_name, is_crawler
 from flask_vouch.netset import (
     NetSet,
     _cache_path_for,
@@ -39,6 +26,11 @@ from flask_vouch.netset import (
     _parse_line,
     parse_netset,
 )
+from flask_vouch.policy import COOKIE_NAME, blocklist_match, load_policy
+from flask_vouch.rendering import challenge_headers, resolve_template, safe_redirect
+from flask_vouch.stores import ChallengeStore, RateLimiter
+from flask_vouch.tokens import b64url_encode
+from flask_vouch.vouch import _to_request, client_ip
 
 SECRET = "test-secret-key-32-bytes-long!!!"
 SECRET_BYTES = SECRET.encode()
@@ -364,8 +356,9 @@ class TestSHA256Handler:
         assert h.to_difficulty(0) == 8  # offset is 8
 
     def test_template_is_html(self):
-        h = SHA256()
-        tmpl = h.template
+        from flask_vouch.rendering import resolve_template
+
+        tmpl = resolve_template(SHA256())
         assert (
             "<html" in tmpl.lower()
             or "<!doctype" in tmpl.lower()
@@ -442,25 +435,6 @@ class TestChallengeHandlerDefaults:
         assert result["type"] == "error"
 
 
-# --- _meta_encrypt / _meta_decrypt ---
-
-
-class TestMetaCrypto:
-    def test_round_trip(self):
-        data = {"remote_addr": "1.2.3.4", "extra": 42}
-        enc = _meta_encrypt(data, SECRET_BYTES)
-        dec = _meta_decrypt(enc, SECRET_BYTES)
-        assert dec == data
-
-    def test_wrong_key_returns_none(self):
-        enc = _meta_encrypt({"x": 1}, SECRET_BYTES)
-        # wrong key produces garbled JSON → None
-        result = _meta_decrypt(enc, b"wrong-key-32-bytes!!!!!!!!!!!!!!!")
-        # may be None or parse garbage — shouldn't crash
-        # actually with XOR key it will decode to garbage, not valid JSON
-        assert result is None or isinstance(result, dict)
-
-
 # --- RateLimiter ---
 
 
@@ -505,49 +479,20 @@ class TestRateLimiter:
             assert c.get("/").status_code == 429
 
 
-# --- TokenTracker ---
-
-
-class TestTokenTracker:
-    def test_total_limit(self):
-        tt = TokenTracker()
-        tt.hit("c", 0, 60, 2)
-        tt.hit("c", 0, 60, 2)
-        assert not tt.hit("c", 0, 60, 2)
-
-    def test_rate_limit(self):
-        tt = TokenTracker()
-        tt.hit("c", 2, 60, 0)
-        tt.hit("c", 2, 60, 0)
-        assert not tt.hit("c", 2, 60, 0)
-
-    def test_no_limits(self):
-        tt = TokenTracker()
-        for _ in range(10):
-            assert tt.hit("c", 0, 60, 0)
-
-    def test_rate_window_expires(self):
-        tt = TokenTracker()
-        with patch("flask_vouch.engine.time.time", side_effect=[100.0, 101.0, 170.0]):
-            assert tt.hit("c", 2, 60, 0)
-            assert tt.hit("c", 2, 60, 0)
-            assert tt.hit("c", 2, 60, 0)
-
-
 # --- Store eviction ---
 
 
 class TestStoreEviction:
     def test_evicts_oldest_when_full(self):
-        store = Store(max_size=2)
-        c1 = Challenge(
+        store = ChallengeStore(max_size=2)
+        c1 = ChallengeBase(
             id="a",
             random_data="x",
             difficulty=1,
             ip_hash="h",
             created_at=time.time() - 10,
         )
-        c2 = Challenge(
+        c2 = ChallengeBase(
             id="b",
             random_data="y",
             difficulty=1,
@@ -556,7 +501,7 @@ class TestStoreEviction:
         )
         store.set(c1)
         store.set(c2)
-        c3 = Challenge(
+        c3 = ChallengeBase(
             id="c", random_data="z", difficulty=1, ip_hash="h", created_at=time.time()
         )
         store.set(c3)
@@ -565,80 +510,7 @@ class TestStoreEviction:
         assert store.get("c") is c3
 
 
-# --- Engine.validate_csrf_token ---
-
-
-class TestCSRFToken:
-    def make_engine(self):
-        return Engine(secret=SECRET, policy=Policy(rules=[]))
-
-    def test_valid_token(self):
-        engine = self.make_engine()
-        req = make_request()
-        token = engine.generate_csrf_token("cid123", req)
-        assert engine.validate_csrf_token(token, "cid123", req)
-
-    def test_wrong_challenge_id(self):
-        engine = self.make_engine()
-        req = make_request()
-        token = engine.generate_csrf_token("cid123", req)
-        assert not engine.validate_csrf_token(token, "other", req)
-
-    def test_wrong_ip(self):
-        engine = self.make_engine()
-        token = engine.generate_csrf_token("cid", make_request(remote_addr="1.2.3.4"))
-        assert not engine.validate_csrf_token(
-            token, "cid", make_request(remote_addr="9.9.9.9")
-        )
-
-    def test_garbage_token(self):
-        engine = self.make_engine()
-        assert not engine.validate_csrf_token("garbage!!!", "cid", make_request())
-
-    def test_expired_token(self):
-        engine = self.make_engine()
-        req = make_request()
-        with patch("flask_vouch.engine.time") as mock_time:
-            mock_time.time.return_value = time.time() - 9000
-            token = engine.generate_csrf_token("cid", req)
-        assert not engine.validate_csrf_token(token, "cid", req)
-
-    def test_invalid_signature_format(self):
-        engine = self.make_engine()
-        req = make_request()
-        token = _b64url_encode(b"cid:123:abc")
-        assert not engine.validate_csrf_token(token, "cid", req)
-
-    def test_invalid_payload_fields(self):
-        engine = self.make_engine()
-        bad_sig = _b64url_encode(engine._hmac(b"csrf:cid:123"))
-        token = _b64url_encode(f"cid:123:{bad_sig}".encode())
-        assert not engine.validate_csrf_token(token, "cid", make_request())
-
-
-# --- Engine.check_token_limit ---
-
-
-class TestCheckTokenLimit:
-    def test_no_limits_always_true(self):
-        engine = Engine(
-            secret=SECRET,
-            policy=Policy(rules=[], token_rate_limit=0, token_total_limit=0),
-        )
-        for _ in range(10):
-            assert engine.check_token_limit("cid")
-
-    def test_total_limit_exceeded(self):
-        engine = Engine(
-            secret=SECRET,
-            policy=Policy(rules=[], token_total_limit=2, token_rate_limit=0),
-        )
-        engine.check_token_limit("c")
-        engine.check_token_limit("c")
-        assert not engine.check_token_limit("c")
-
-
-# --- Engine.validate_challenge with csrf ---
+# --- Engine.validate_challenge ---
 
 
 class TestValidateChallengeExtra:
@@ -650,14 +522,13 @@ class TestValidateChallengeExtra:
             policy=Policy(rules=[], challenge_handler=SHA256Balloon()),
         )
 
-    def test_csrf_valid_passes(self):
+    def test_solution_issues_cookie(self):
         engine = self.make_engine()
         from flask_vouch.challenges.base import count_leading_zero_bits as clzb
         from flask_vouch.challenges.sha256_balloon import _balloon
 
         req = make_request()
         c = engine.issue_challenge(1, req)
-        csrf = engine.generate_csrf_token(c.id, req)
         handler = engine.policy.challenge_handler
         for nonce in range(200_000):
             result = _balloon(
@@ -668,17 +539,9 @@ class TestValidateChallengeExtra:
                 handler.delta,
             )
             if clzb(result) >= 1:
-                token = engine.validate_challenge(c.id, str(nonce), req, csrf)
-                assert token is not None
+                assert engine.validate_challenge(c.id, str(nonce), req) is not None
                 return
         raise RuntimeError("unsolvable")
-
-    def test_csrf_invalid_fails(self):
-        engine = self.make_engine()
-        req = make_request()
-        c = engine.issue_challenge(1, req)
-        token = engine.validate_challenge(c.id, "0", req, "bad-csrf")
-        assert token is None
 
     def test_invalid_nonce_type(self):
         engine = self.make_engine()
@@ -803,7 +666,7 @@ class TestVouchRateLimiting:
         r1 = bouncer.process_request(req)
         assert r1 is not None and r1.status == 200
         r2 = bouncer.process_request(req)
-        assert r2 is not None and r2.status == 403
+        assert r2 is not None and r2.status == 429
 
     def test_verify_failure_rate_limit(self):
         bouncer = Vouch(
@@ -822,7 +685,7 @@ class TestVouchRateLimiting:
         r1 = bouncer.process_request(req)
         assert r1 is not None and r1.status == 403 and r1.body == "Invalid"
         r2 = bouncer.process_request(req)
-        assert r2 is not None and r2.status == 403 and r2.body == "Too Many Requests"
+        assert r2 is not None and r2.status == 429 and r2.body == "Too Many Requests"
 
     def test_verify_failure_rate_limit_json(self):
         bouncer = Vouch(
@@ -1004,19 +867,19 @@ class TestFlaskDecorators:
 
 class TestSafeRedirect:
     def test_valid(self):
-        assert _safe_redirect("/page") == "/page"
+        assert safe_redirect("/page") == "/page"
 
     def test_double_slash(self):
-        assert _safe_redirect("//evil.com") == "/"
+        assert safe_redirect("//evil.com") == "/"
 
     def test_backslash(self):
-        assert _safe_redirect("/\\evil") == "/"
+        assert safe_redirect("/\\evil") == "/"
 
     def test_newline(self):
-        assert _safe_redirect("/page\nX-Header: injected") == "/"
+        assert safe_redirect("/page\nX-Header: injected") == "/"
 
     def test_no_leading_slash(self):
-        assert _safe_redirect("https://evil.com") == "/"
+        assert safe_redirect("https://evil.com") == "/"
 
 
 # --- Engine constructor with extra_rules ---
@@ -1070,23 +933,32 @@ class TestEngineHelpers:
         b = NetSet.__new__(NetSet)
         a.match_range = lambda ip: None
         b.match_range = lambda ip: "10.0.0.0/8"
-        assert _blocklist_match([a, b], "10.1.2.3") == "10.0.0.0/8"
+        assert blocklist_match([a, b], "10.1.2.3") == "10.0.0.0/8"
 
     def test_blocklist_match_none(self):
-        assert _blocklist_match(None, "1.2.3.4") is None
+        assert blocklist_match(None, "1.2.3.4") is None
 
     def test_challenge_headers_extra_csp(self):
         class Handler:
             extra_csp = "frame-src https://example.com"
 
-        headers = _challenge_headers(Handler())
+        headers = challenge_headers(Handler())
         assert "frame-src https://example.com" in headers["Content-Security-Policy"]
 
-    def test_load_policy_uses_empty_config_when_missing(self, tmp_path):
+    def test_load_policy_applies_config_file(self, tmp_path):
         rules = tmp_path / "rules.json"
         rules.write_text('[{"name":"ok","action":"allow"}]')
-        policy = load_policy(config=tmp_path / "missing.json", rules=rules)
+        config = tmp_path / "config.json"
+        config.write_text('{"default_difficulty": 3}')
+        policy = load_policy(config=config, rules=rules)
         assert policy.rules[0].action == "allow"
+        assert policy.default_difficulty == 3
+
+    def test_load_policy_missing_config_raises(self, tmp_path):
+        import pytest
+
+        with pytest.raises(FileNotFoundError):
+            load_policy(config=tmp_path / "missing.json")
 
     def test_engine_sets_handler_secret(self):
         class SecretHandler(SHA256):
@@ -1144,7 +1016,6 @@ class TestEngineVerifyBranches:
         )
         req = make_request()
         challenge = engine.issue_challenge(0, req)
-        csrf = engine.generate_csrf_token(challenge.id, req)
 
         result = Vouch(engine=engine).process_request(
             make_request(
@@ -1154,7 +1025,6 @@ class TestEngineVerifyBranches:
                     "id": challenge.id,
                     "nonce.x": "0",
                     "nonce.y": "0",
-                    "csrf_token": csrf,
                     "redirect": "/done",
                 },
             )
@@ -1163,7 +1033,7 @@ class TestEngineVerifyBranches:
         assert result.status == 302
         assert result.headers["Location"] == "/done"
 
-    def test_handle_verify_retry_uses_safe_redirect(self):
+    def test_handle_verify_retry_usessafe_redirect(self):
         class RetryHandler(SHA256):
             @property
             def retry_on_failure(self) -> bool:
@@ -1181,6 +1051,193 @@ class TestEngineVerifyBranches:
             )
         )
 
-        assert result.status == 429
+        assert result.status == 403
         assert "Content-Security-Policy" in result.headers
         assert '"redirect": "/"' in result.body
+
+
+# --- Trusted proxies ---
+
+
+class TestClientIP:
+    def test_header_ignored_without_trust(self):
+        assert client_ip("10.0.0.1", "1.2.3.4", None) == "10.0.0.1"
+
+    def test_no_header_uses_peer(self):
+        assert client_ip("10.0.0.1", "", 1) == "10.0.0.1"
+
+    def test_hop_count_picks_last_written_entry(self):
+        assert client_ip("10.0.0.1", "1.2.3.4, 10.0.0.9", 1) == "10.0.0.9"
+        assert client_ip("10.0.0.1", "1.2.3.4, 10.0.0.9", 2) == "1.2.3.4"
+
+    def test_spoofed_prefix_is_skipped(self):
+        assert client_ip("10.0.0.1", "evil, 1.2.3.4", 1) == "1.2.3.4"
+
+    def test_trusted_networks(self):
+        assert client_ip("10.0.0.1", "1.2.3.4, 10.0.0.9", ["10.0.0.0/8"]) == "1.2.3.4"
+
+    def test_trusted_networks_all_trusted(self):
+        assert client_ip("10.0.0.1", "10.0.0.2", ["10.0.0.0/8"]) == "10.0.0.2"
+
+    def test_invalid_entry_is_not_trusted(self):
+        assert client_ip("10.0.0.1", "not-an-ip", ["10.0.0.0/8"]) == "not-an-ip"
+
+    def test_flask_request_uses_trusted_proxies(self):
+        app = flask.Flask(__name__)
+        with app.test_request_context("/", headers={"X-Forwarded-For": "8.8.8.8"}):
+            assert _to_request(1)["remote_addr"] == "8.8.8.8"
+            assert _to_request(None)["remote_addr"] != "8.8.8.8"
+
+
+# --- Secret validation ---
+
+
+class TestSecret:
+    def test_missing_secret(self):
+        import pytest
+
+        with pytest.raises(ValueError):
+            Engine(None)
+
+    def test_short_secret(self):
+        import pytest
+
+        with pytest.raises(ValueError):
+            Engine("too-short")
+
+    def test_bytes_secret(self):
+        assert Engine(SECRET_BYTES, policy=Policy(rules=[])).secret == SECRET_BYTES
+
+    def test_engine_property_without_configuration(self):
+        import pytest
+
+        with pytest.raises(RuntimeError):
+            Vouch().engine
+
+
+# --- Custom templates ---
+
+
+class TestCustomTemplates:
+    def make_challenge(self, handler):
+        return ChallengeBase(
+            id="abc",
+            random_data="ff",
+            difficulty=1,
+            ip_hash="x",
+            created_at=time.time(),
+            challenge_type=handler.challenge_type,
+        )
+
+    def test_inline_template_wins(self):
+        handler = SHA256(template="<b>{{id}}</b>")
+        assert resolve_template(handler) == "<b>{{id}}</b>"
+
+    def test_path_template_is_read(self, tmp_path):
+        page = tmp_path / "page.html"
+        page.write_text("<i>custom</i>")
+        assert resolve_template(SHA256(template=page)) == "<i>custom</i>"
+
+    def test_template_dir_override(self, tmp_path):
+        (tmp_path / "sha256.html").write_text("<u>dir</u>")
+        assert resolve_template(SHA256(), tmp_path) == "<u>dir</u>"
+
+    def test_template_dir_falls_back_to_bundled(self, tmp_path):
+        assert "<!DOCTYPE" in resolve_template(SHA256(), tmp_path).upper()
+
+    def test_rendered_page_uses_override(self):
+        handler = SHA256(template="<b>{{id}}</b> {{ACCENT_COLOR}} {{BRANDING}}")
+        engine = Engine(
+            secret=SECRET, policy=Policy(rules=[], challenge_handler=handler)
+        )
+        html = engine.render_challenge(self.make_challenge(handler), "/")
+        assert html.startswith("<b>abc</b> #44ff88 ")
+        assert "flask-Vouch" in html
+
+
+# --- Handler failures surface as 503 ---
+
+
+class TestChallengeErrors:
+    def make_vouch(self, handler):
+        return Vouch(
+            secret=SECRET,
+            policy=Policy(
+                rules=[Rule(name="all", action="challenge")],
+                challenge_handler=handler,
+            ),
+        )
+
+    def test_generation_failure(self):
+        class Broken(SHA256):
+            def generate_random_data(self, difficulty: int = 0) -> str:
+                raise RuntimeError("boom")
+
+        result = self.make_vouch(Broken()).process_request(make_request())
+        assert result is not None and result.status == 503
+
+    def test_render_failure(self):
+        class Broken(SHA256):
+            def render_payload(self, challenge, verify_path, redirect):
+                raise RuntimeError("boom")
+
+        result = self.make_vouch(Broken()).process_request(make_request())
+        assert result is not None and result.status == 503
+
+    def test_verification_failure(self):
+        class Broken(SHA256):
+            def verify(self, random_data, nonce, difficulty):
+                raise RuntimeError("boom")
+
+        vouch = self.make_vouch(Broken())
+        challenge = vouch.engine.issue_challenge(1, make_request())
+        result = vouch.process_request(
+            make_request(
+                method="POST",
+                path=vouch.verify_path,
+                form={"id": challenge.id, "nonce": "1"},
+            )
+        )
+        assert result is not None and result.status == 503
+
+
+# --- Cookie binding ---
+
+
+class TestCookieBinding:
+    def solve(self, engine, request):
+        challenge = engine.issue_challenge(0, request)
+        for nonce in range(200_000):
+            token = engine.validate_challenge(challenge.id, str(nonce), request)
+            if token:
+                return token
+        raise RuntimeError("unsolvable")
+
+    def make_engine(self, **kwargs):
+        return Engine(
+            secret=SECRET,
+            policy=Policy(rules=[], challenge_handler=SHA256(), **kwargs),
+        )
+
+    def test_roaming_allowed_by_default(self):
+        engine = self.make_engine()
+        token = self.solve(engine, make_request())
+        assert engine.check_cookie(token, make_request(remote_addr="9.9.9.9"))
+
+    def test_bind_ip_rejects_other_address(self):
+        engine = self.make_engine(bind_ip=True)
+        token = self.solve(engine, make_request())
+        assert engine.check_cookie(token, make_request()) is not None
+        assert engine.check_cookie(token, make_request(remote_addr="9.9.9.9")) is None
+
+
+# --- Package metadata ---
+
+
+class TestVersion:
+    def test_version_matches_distribution(self):
+        from importlib.metadata import version
+
+        import flask_vouch
+
+        assert flask_vouch.__version__ == version("flask-Vouch")

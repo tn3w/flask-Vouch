@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from pathlib import Path
 
 _DEFAULT_ACCENT = "#44ff88"

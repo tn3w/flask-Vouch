@@ -1,7 +1,10 @@
+from __future__ import annotations
+
 import hashlib
 import secrets
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .base import ChallengeBase, ChallengeHandler, ChallengeType
 from .scoring import (
@@ -115,11 +118,14 @@ class _Session:
     started_at: float = field(default_factory=time.monotonic)
 
 
+@dataclass
 class QuirkProbe(ChallengeHandler):
+    template: str | Path | None = None
+
     SESSION_TIMEOUT = 45
     MIN_SCORE = 0.55
 
-    def __init__(self) -> None:
+    def __post_init__(self) -> None:
         self._sessions = SessionStore(self.SESSION_TIMEOUT)
 
     @property

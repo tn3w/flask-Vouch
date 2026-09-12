@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from .audio_captcha import AudioCaptcha
 from .base import (
     DIFFICULTY_OFFSETS,

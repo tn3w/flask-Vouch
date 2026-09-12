@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import hashlib
 import hmac
 import secrets
@@ -73,6 +75,14 @@ class ChallengeBase:
 
 
 class ChallengeHandler(ABC):
+    """Base for every challenge.
+
+    Handlers set ``template`` to override the bundled page: a ``Path`` is read
+    from disk, a ``str`` is used as the page itself.
+    """
+
+    template: str | Path | None = None
+
     @property
     @abstractmethod
     def challenge_type(self) -> ChallengeType: ...
@@ -90,11 +100,6 @@ class ChallengeHandler(ABC):
 
     def to_difficulty(self, base: int) -> int:
         return base + DIFFICULTY_OFFSETS[self.challenge_type]
-
-    @property
-    def template(self) -> str:
-        name = self.challenge_type.value.replace("-", "_")
-        return (TEMPLATES_DIR / f"{name}.html").read_text()
 
     def generate_random_data(self, difficulty: int = 0) -> str:
         return secrets.token_hex(64)
@@ -127,6 +132,7 @@ class SignedTokenHandler(ChallengeHandler):
 
     token_ttl: int = TOKEN_TTL
     secret: bytes = field(default_factory=lambda: secrets.token_bytes(32))
+    template: str | Path | None = None
 
     def _sign(self, payload: str) -> str:
         return hmac.new(self.secret, payload.encode(), hashlib.sha256).hexdigest()

@@ -1,7 +1,8 @@
+from __future__ import annotations
+
 import functools
-import time
-from collections import OrderedDict
-from threading import Lock
+
+from flask_vouch.stores import RateLimiter as _MemoryStore
 
 _UNITS = {
     "second": 1,
@@ -34,34 +35,6 @@ def _parse_rate(rate: str) -> tuple[int, int]:
 def _xff_or(xff: str, fallback: str) -> str:
     first = xff.split(",")[0].strip()
     return first if first else fallback
-
-
-class _MemoryStore:
-    def __init__(self, max_size: int = 10_000):
-        self._data: OrderedDict[str, list[float]] = OrderedDict()
-        self._max_size = max_size
-        self._lock = Lock()
-
-    def hit(self, key: str, limit: int, window: int) -> bool:
-        now = time.time()
-        cutoff = now - window
-
-        with self._lock:
-            if key in self._data:
-                self._data.move_to_end(key)
-                hits = [t for t in self._data[key] if t > cutoff]
-            else:
-                hits = []
-                if len(self._data) >= self._max_size:
-                    self._data.popitem(last=False)
-
-            if len(hits) >= limit:
-                self._data[key] = hits
-                return False
-
-            hits.append(now)
-            self._data[key] = hits
-            return True
 
 
 class _RedisStore:

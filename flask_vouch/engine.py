@@ -1,498 +1,29 @@
-import base64
+from __future__ import annotations
+
 import hashlib
 import hmac
-import html as _html
-import ipaddress
-import json
-import re
+import logging
 import secrets
 import time
-from dataclasses import dataclass, field
-from functools import lru_cache
 from pathlib import Path
-from threading import Lock
-from typing import TYPE_CHECKING, Any, NotRequired, TypedDict, Unpack
+from typing import TYPE_CHECKING, TypedDict
+
+from flask_vouch.challenges import ChallengeBase, ChallengeHandler
+from flask_vouch.policy import Blocklist, Policy, Request, Rule, load_policy
+from flask_vouch.rendering import render_challenge
+from flask_vouch.stores import ChallengeStore, RateLimiter
+from flask_vouch.tokens import jwt_decode, jwt_encode
 
 if TYPE_CHECKING:
-    from flask_vouch.netset import NetSet
+    from typing_extensions import Unpack
 
-from flask_vouch.challenges import ChallengeBase, ChallengeHandler, SHA256Balloon
+log = logging.getLogger("flask_vouch")
 
-Challenge = ChallengeBase
+MIN_SECRET_BYTES = 16
 
-_KEYWORDS = (
-    "bot",
-    "crawl",
-    "spider",
-    "scrape",
-    "slurp",
-    "archiv",
-    "headless",
-    "indexer",
-    "preview",
-    "fetch",
-    "monitor",
-    "uptime",
-    "feed",
-    "check",
-    "validator",
-    "scan",
-    "probe",
-    "rank",
-    "analyz",
-    "synthetic",
-    "sitemap",
-    "favicon",
-    "resolver",
-    "sleuth",
-    "ghost",
-    "page speed",
-    "search console",
-    "-publisher",
-    "-agent",
-    "www.",
-)
-_REAL_BROWSERS = (
-    "opera/",
-    "lynx/",
-    "links ",
-    "links/",
-    "elinks/",
-    "w3m/",
-    "konqueror/",
-    "icab/",
-    "netsurf",
-    "seamonkey/",
-    "iceweasel/",
-)
-_REAL_COMPAT = (
-    "msie",
-    "konqueror",
-    "avant",
-    "maxthon",
-    "sleipnir",
-    "acoo",
-    "slcc",
-    ".net clr",
-    "presto",
-)
 
-
-def _bare_compatible(low: str) -> bool:
-    start = low.find("(compatible;")
-    if start == -1:
-        return False
-    end = low.find(")", start)
-    return end != -1 and not any(token in low[start:end] for token in _REAL_COMPAT)
-
-
-@lru_cache(maxsize=2048)
-def is_crawler(user_agent: str) -> bool:
-    low = user_agent.lower()
-
-    if any(keyword in low for keyword in _KEYWORDS):
-        return True
-    if "http://" in user_agent or "https://" in user_agent:
-        return True
-    if not user_agent.startswith("Mozilla/") and not any(
-        b in low for b in _REAL_BROWSERS
-    ):
-        return True
-    return _bare_compatible(low)
-
-
-@lru_cache(maxsize=2048)
-def crawler_name(user_agent: str) -> str | None:
-    if user_agent.startswith("Mozilla/"):
-        compat = user_agent.find("(compatible;")
-        if compat == -1:
-            return None
-        start = compat + len("(compatible;")
-        while start < len(user_agent) and user_agent[start] == " ":
-            start += 1
-        end = start
-        while end < len(user_agent) and user_agent[end] not in " /;)":
-            end += 1
-        name = user_agent[start:end]
-        return name or None
-
-    head = user_agent.split(None, 1)[0] if user_agent else ""
-    return head.split("/", 1)[0] or None
-
-
-COOKIE_NAME = "_tollbooth"
-VERIFY_PATH = "/.tollbooth/verify"
-CHALLENGE_TTL = 1800
-COOKIE_TTL = 604_800
-
-DEFAULT_DIFFICULTY = 10
-CHALLENGE_THRESHOLD = 5
-MAX_STORE_SIZE = 100_000
-
-RATE_LIMIT_WINDOW = 300
-MAX_CHALLENGE_FAILURES = 3
-MAX_CHALLENGE_REQUESTS = 10
-
-TOKEN_RATE_WINDOW = 60
-TOKEN_RATE_LIMIT = 120
-TOKEN_TOTAL_LIMIT = 3000
-
-CSRF_TTL = 1800
-
-BRANDING = True
-ACCENT_COLOR = "#44ff88"
-COOKIE_SECURE = True
-
-
-class Request(TypedDict):
-    method: str
-    path: str
-    query: str
-    user_agent: str
-    remote_addr: str
-    headers: dict[str, str]
-    cookies: dict[str, str]
-    form: dict[str, str]
-    secure: bool
-    json: NotRequired[Any]
-    _claims: NotRequired[Any]
-
-
-def _b64url_encode(data: bytes) -> str:
-    return base64.urlsafe_b64encode(data).rstrip(b"=").decode()
-
-
-def _b64url_decode(s: str) -> bytes:
-    return base64.urlsafe_b64decode(s + "=" * (4 - len(s) % 4))
-
-
-_JWT_HEADER = _b64url_encode(b'{"alg":"HS256","typ":"JWT"}')
-
-
-def _meta_keystream(secret: bytes, length: int) -> bytes:
-    key = hmac.new(secret, b"tbmeta", hashlib.sha256).digest()
-    blocks = [
-        hmac.new(key, i.to_bytes(4, "big"), hashlib.sha256).digest()
-        for i in range(-(-length // 32))
-    ]
-    return b"".join(blocks)[:length]
-
-
-def _meta_xor(data: bytes, secret: bytes) -> bytes:
-    return bytes(a ^ b for a, b in zip(data, _meta_keystream(secret, len(data))))
-
-
-def _meta_encrypt(data: dict, secret: bytes) -> str:
-    plaintext = json.dumps(data, separators=(",", ":")).encode()
-    return _b64url_encode(_meta_xor(plaintext, secret))
-
-
-def _meta_decrypt(s: str, secret: bytes) -> dict | None:
-    try:
-        return json.loads(_meta_xor(_b64url_decode(s), secret))
-    except Exception:
-        return None
-
-
-def jwt_encode(claims: dict, secret: bytes) -> str:
-    payload = _b64url_encode(json.dumps(claims).encode())
-    signing = f"{_JWT_HEADER}.{payload}"
-    sig = hmac.new(secret, signing.encode(), hashlib.sha256).digest()
-
-    return f"{signing}.{_b64url_encode(sig)}"
-
-
-def jwt_decode(token: str, secret: bytes) -> dict:
-    parts = token.split(".")
-    if len(parts) != 3:
-        raise ValueError("invalid token")
-
-    if parts[0] != _JWT_HEADER:
-        raise ValueError("unsupported algorithm")
-
-    signing = f"{parts[0]}.{parts[1]}"
-    expected = hmac.new(
-        secret,
-        signing.encode(),
-        hashlib.sha256,
-    ).digest()
-
-    if not hmac.compare_digest(expected, _b64url_decode(parts[2])):
-        raise ValueError("invalid signature")
-
-    claims = json.loads(_b64url_decode(parts[1]))
-    if claims.get("exp", 0) < time.time():
-        raise ValueError("token expired")
-
-    return claims
-
-
-class Store:
-    def __init__(
-        self,
-        challenge_ttl: int = CHALLENGE_TTL,
-        max_size: int = MAX_STORE_SIZE,
-    ):
-        self._ttl = challenge_ttl
-        self._max_size = max_size
-        self._data: dict[str, ChallengeBase] = {}
-        self._lock = Lock()
-
-    def _cleanup(self):
-        cutoff = time.time() - self._ttl
-        for k in [k for k, v in self._data.items() if v.created_at < cutoff]:
-            del self._data[k]
-
-    def _evict_oldest(self):
-        excess = len(self._data) - self._max_size + 1
-        if excess <= 0:
-            return
-        oldest = sorted(
-            self._data,
-            key=lambda k: self._data[k].created_at,
-        )[:excess]
-        for k in oldest:
-            del self._data[k]
-
-    def set(self, challenge: ChallengeBase):
-        with self._lock:
-            self._cleanup()
-            self._evict_oldest()
-            self._data[challenge.id] = challenge
-
-    def get(self, cid: str) -> ChallengeBase | None:
-        with self._lock:
-            self._cleanup()
-            return self._data.get(cid)
-
-
-class RateLimiter:
-    def __init__(self):
-        self._data: dict[str, list[float]] = {}
-        self._lock = Lock()
-
-    def hit(self, key: str, limit: int, window: int) -> bool:
-        now = time.time()
-        cutoff = now - window
-        with self._lock:
-            hits = [t for t in self._data.get(key, []) if t > cutoff]
-            if len(hits) >= limit:
-                self._data[key] = hits
-                return False
-            hits.append(now)
-            self._data[key] = hits
-            return True
-
-
-class TokenTracker:
-    def __init__(self):
-        self._lock = Lock()
-        self._windows: dict[str, list[float]] = {}
-        self._totals: dict[str, int] = {}
-
-    def hit(
-        self,
-        cid: str,
-        rate_limit: int,
-        rate_window: int,
-        total_limit: int,
-    ) -> bool:
-        now = time.time()
-        with self._lock:
-            hits = None
-            if rate_limit > 0:
-                cutoff = now - rate_window
-                hits = [t for t in self._windows.get(cid, []) if t > cutoff]
-                if len(hits) >= rate_limit:
-                    return False
-
-            if total_limit > 0 and self._totals.get(cid, 0) + 1 > total_limit:
-                return False
-
-            if total_limit > 0:
-                self._totals[cid] = self._totals.get(cid, 0) + 1
-
-            if hits is not None:
-                hits.append(now)
-                self._windows[cid] = hits
-
-        return True
-
-
-@dataclass
-class Rule:
-    name: str
-    action: str = "weigh"
-    user_agent: str | None = None
-    path: str | None = None
-    headers: dict[str, str] = field(default_factory=dict)
-    remote_addresses: list[str] = field(default_factory=list)
-    difficulty: int = 0
-    weight: int = 0
-    blocklist: bool = False
-    crawler: bool = False
-    bogon_ip: bool = False
-
-    def __post_init__(self):
-        self.action = self.action.lower()
-
-        self._ua_re = re.compile(self.user_agent) if self.user_agent else None
-        self._path_re = re.compile(self.path) if self.path else None
-        self._header_res = {k: re.compile(v) for k, v in self.headers.items()}
-        self._networks = [
-            ipaddress.ip_network(a, strict=False) for a in self.remote_addresses
-        ]
-
-    def matches(self, request: Request, blocklist=None) -> bool:
-        if self.blocklist and not _in_blocklist(blocklist, request["remote_addr"]):
-            return False
-
-        if self.bogon_ip and not _is_bogon_ip(request["remote_addr"]):
-            return False
-
-        if self.crawler and not is_crawler(request["user_agent"]):
-            return False
-
-        if self._ua_re and not self._ua_re.search(request["user_agent"]):
-            return False
-
-        if self._path_re and not self._path_re.search(request["path"]):
-            return False
-
-        if any(
-            k not in request["headers"] or not p.search(request["headers"][k])
-            for k, p in self._header_res.items()
-        ):
-            return False
-
-        if not self._networks:
-            return True
-
-        try:
-            addr = ipaddress.ip_address(request["remote_addr"])
-        except ValueError:
-            return False
-
-        return any(addr in n for n in self._networks)
-
-
-@dataclass
-class Policy:
-    rules: list[Rule]
-    challenge_threshold: int = CHALLENGE_THRESHOLD
-    default_difficulty: int = DEFAULT_DIFFICULTY
-    challenge_handler: ChallengeHandler = field(default_factory=SHA256Balloon)
-    cookie_name: str = COOKIE_NAME
-    verify_path: str = VERIFY_PATH
-    challenge_ttl: int = CHALLENGE_TTL
-    cookie_ttl: int = COOKIE_TTL
-    branding: bool = BRANDING
-    accent_color: str = ACCENT_COLOR
-    cookie_secure: bool = COOKIE_SECURE
-    max_challenge_failures: int = MAX_CHALLENGE_FAILURES
-    max_challenge_requests: int = MAX_CHALLENGE_REQUESTS
-    rate_limit_window: int = RATE_LIMIT_WINDOW
-    token_rate_limit: int = TOKEN_RATE_LIMIT
-    token_rate_window: int = TOKEN_RATE_WINDOW
-    token_total_limit: int = TOKEN_TOTAL_LIMIT
-
-    def evaluate(
-        self,
-        request: Request,
-        blocklist=None,
-    ) -> tuple[str, int, "Rule | None"]:
-        weight = 0
-
-        for rule in self.rules:
-            if not rule.matches(request, blocklist):
-                continue
-            if rule.action == "allow":
-                return "allow", 0, rule
-            if rule.action == "deny":
-                return "deny", 0, rule
-            if rule.action == "challenge":
-                return "challenge", rule.difficulty or self.default_difficulty, rule
-            weight += rule.weight
-
-        if weight >= self.challenge_threshold:
-            return "challenge", self.default_difficulty, None
-
-        return "allow", 0, None
-
-
-def load_policy(config=None, rules=None) -> Policy:
-    base = Path(__file__).parent
-
-    cfg_path = Path(config) if config else (base / "config.json")
-    cfg = json.loads(cfg_path.read_text()) if cfg_path.exists() else {}
-
-    rules_path = Path(rules) if rules else base / "rules.json"
-    rule_list = json.loads(rules_path.read_text())
-
-    return Policy(
-        rules=[Rule(**r) for r in rule_list],
-        **cfg,
-    )
-
-
-def _in_blocklist(blocklist, ip: str) -> bool:
-    if not blocklist:
-        return False
-    if isinstance(blocklist, list):
-        return any(bl.contains(ip) for bl in blocklist)
-    return blocklist.contains(ip)
-
-
-def _is_bogon_ip(ip: str) -> bool:
-    try:
-        return not ipaddress.ip_address(ip).is_global
-    except ValueError:
-        return True
-
-
-def _blocklist_match(blocklist, ip: str) -> str | None:
-    if not blocklist:
-        return None
-    items = blocklist if isinstance(blocklist, list) else [blocklist]
-    for bl in items:
-        match = bl.match_range(ip)
-        if match:
-            return match
-    return None
-
-
-def _safe_redirect(redirect: str) -> str:
-    if (
-        not redirect.startswith("/")
-        or redirect.startswith("//")
-        or redirect.startswith("/\\")
-        or "\n" in redirect
-        or "\r" in redirect
-    ):
-        return "/"
-    return redirect
-
-
-_BASE_CSP = (
-    "default-src 'none'; "
-    "script-src 'unsafe-inline'; "
-    "worker-src blob:; "
-    "style-src 'unsafe-inline'; "
-    "img-src data: 'self'; "
-    "connect-src 'self'"
-)
-
-_BASE_CHALLENGE_HEADERS = {
-    "Content-Type": "text/html; charset=utf-8",
-    "Cache-Control": "no-store",
-    "X-Content-Type-Options": "nosniff",
-}
-
-
-def _challenge_headers(handler) -> dict[str, str]:
-    extra = handler.extra_csp
-    csp = f"{_BASE_CSP}; {extra}" if extra else _BASE_CSP
-    return {**_BASE_CHALLENGE_HEADERS, "Content-Security-Policy": csp}
+class ChallengeError(RuntimeError):
+    """A challenge handler failed to produce or check a challenge."""
 
 
 class EngineKwargs(TypedDict, total=False):
@@ -501,7 +32,7 @@ class EngineKwargs(TypedDict, total=False):
     default_rules: bool
     config_file: str | None
     rules_file: str | None
-    blocklist: "NetSet | list[NetSet] | None"
+    blocklist: Blocklist
     challenge_threshold: int
     default_difficulty: int
     challenge_handler: ChallengeHandler
@@ -511,17 +42,19 @@ class EngineKwargs(TypedDict, total=False):
     cookie_ttl: int
     branding: bool
     accent_color: str
+    template_dir: str | Path | None
     cookie_secure: bool
+    cookie_samesite: str
+    bind_ip: bool
     max_challenge_failures: int
     max_challenge_requests: int
     rate_limit_window: int
-    token_rate_limit: int
-    token_rate_window: int
-    token_total_limit: int
 
 
 class Engine:
-    def __init__(self, secret, **kwargs: Unpack[EngineKwargs]):
+    """Framework-agnostic core: policy evaluation, challenges, access cookies."""
+
+    def __init__(self, secret: str | bytes, **kwargs: Unpack[EngineKwargs]):
         policy = kwargs.pop("policy", None)
         extra_rules = kwargs.pop("rules", None)
         include_defaults = kwargs.pop("default_rules", True)
@@ -529,11 +62,11 @@ class Engine:
         rules_file = kwargs.pop("rules_file", None)
         self.blocklist = kwargs.pop("blocklist", None)
 
-        self.secret = secret.encode() if isinstance(secret, str) else secret
+        self.secret = _check_secret(secret)
         self.policy = policy or load_policy(config_file, rules_file)
 
-        for key, val in kwargs.items():
-            setattr(self.policy, key, val)
+        for key, value in kwargs.items():
+            setattr(self.policy, key, value)
 
         if extra_rules is not None:
             self.policy.rules = (
@@ -544,121 +77,50 @@ class Engine:
         if hasattr(handler, "secret"):
             setattr(handler, "secret", self.secret)
 
-        self.store = Store(self.policy.challenge_ttl)
-        self._rate_limiter = RateLimiter()
-        self._token_tracker = TokenTracker()
+        self.store = ChallengeStore(self.policy.challenge_ttl)
+        self.rate_limiter = RateLimiter()
 
     def _hmac(self, data: bytes) -> bytes:
         return hmac.new(self.secret, data, hashlib.sha256).digest()
 
-    def _hash_ip(self, ip: str) -> str:
+    def hash_ip(self, ip: str) -> str:
         return self._hmac(ip.encode()).hex()[:16]
 
-    def generate_csrf_token(
-        self,
-        challenge_id: str,
-        request: Request,
-    ) -> str:
-        now = int(time.time())
-        payload = f"{challenge_id}:{now}:{self._hash_ip(request['remote_addr'])}"
-        sig = self._hmac(f"csrf:{payload}".encode())
-        return _b64url_encode(f"{payload}:{_b64url_encode(sig)}".encode())
+    def allow(self, scope: str, request: Request, limit: int) -> bool:
+        key = f"{scope}:{self.hash_ip(request['remote_addr'])}"
+        allowed = self.rate_limiter.hit(key, limit, self.policy.rate_limit_window)
+        if not allowed:
+            log.info("rate limit hit: scope=%s path=%s", scope, request["path"])
+        return allowed
 
-    def validate_csrf_token(
-        self,
-        token: str,
-        challenge_id: str,
-        request: Request,
-    ) -> bool:
-        try:
-            decoded = _b64url_decode(token).decode()
-            parts = decoded.rsplit(":", 1)
-            if len(parts) != 2:
-                return False
-
-            payload, sig_b64 = parts
-            expected = self._hmac(f"csrf:{payload}".encode())
-            if not hmac.compare_digest(_b64url_decode(sig_b64), expected):
-                return False
-
-            fields = payload.split(":")
-            if len(fields) != 3:
-                return False
-
-            token_cid, token_time, token_ip = fields
-            if token_cid != challenge_id:
-                return False
-
-            if not hmac.compare_digest(token_ip, self._hash_ip(request["remote_addr"])):
-                return False
-
-            issued = int(token_time)
-            if time.time() - issued > CSRF_TTL:
-                return False
-
-            return True
-        except (ValueError, UnicodeDecodeError):
-            return False
-
-    def generate_client_id(self, request: Request) -> str:
-        headers = request["headers"]
-
-        def header(name: str) -> str:
-            return headers.get(name, headers.get(name.lower(), ""))
-
-        parts = [
-            request["remote_addr"],
-            request["user_agent"],
-            header("Accept-Language"),
-            header("Accept-Encoding"),
-            header("Sec-Ch-Ua"),
-            header("Sec-Ch-Ua-Platform"),
-            header("X-Tls-Version"),
-            header("X-Tls-Cipher"),
-        ]
-        return self._hmac(f"client_id:{'|'.join(parts)}".encode()).hex()[:32]
-
-    def check_cookie(
-        self,
-        cookie_value: str,
-        request: Request,
-    ) -> dict | None:
+    def check_cookie(self, cookie_value: str, request: Request) -> dict | None:
         try:
             claims = jwt_decode(cookie_value, self.secret)
-            if not hmac.compare_digest(
-                str(claims.get("ip", "")),
-                self._hash_ip(request["remote_addr"]),
-            ):
-                return None
-            meta_enc = claims.pop("_m", None)
-            if meta_enc:
-                meta = _meta_decrypt(meta_enc, self.secret)
-                if meta:
-                    claims.update(meta)
-            return claims
         except (ValueError, KeyError):
             return None
 
-    def check_token_limit(self, cid: str) -> bool:
-        p = self.policy
-        if p.token_rate_limit == 0 and p.token_total_limit == 0:
-            return True
-        return self._token_tracker.hit(
-            cid, p.token_rate_limit, p.token_rate_window, p.token_total_limit
-        )
+        if self.policy.bind_ip and not hmac.compare_digest(
+            str(claims.get("ip", "")), self.hash_ip(request["remote_addr"])
+        ):
+            return None
 
-    def issue_challenge(
-        self,
-        difficulty: int,
-        request: Request,
-    ) -> ChallengeBase:
+        return claims
+
+    def issue_challenge(self, difficulty: int, request: Request) -> ChallengeBase:
         handler = self.policy.challenge_handler
         effective = handler.to_difficulty(difficulty)
+
+        try:
+            random_data = handler.generate_random_data(effective)
+        except Exception as error:
+            log.exception("challenge generation failed")
+            raise ChallengeError(str(error)) from error
+
         challenge = ChallengeBase(
             id=secrets.token_urlsafe(24),
-            random_data=handler.generate_random_data(effective),
+            random_data=random_data,
             difficulty=effective,
-            ip_hash=self._hash_ip(request["remote_addr"]),
+            ip_hash=self.hash_ip(request["remote_addr"]),
             created_at=time.time(),
             challenge_type=handler.challenge_type,
         )
@@ -666,100 +128,78 @@ class Engine:
         return challenge
 
     def validate_challenge(
-        self,
-        challenge_id,
-        nonce,
-        request,
-        csrf_token=None,
+        self, challenge_id: str, nonce, request: Request
     ) -> str | None:
-        if csrf_token and not self.validate_csrf_token(
-            csrf_token, challenge_id, request
-        ):
-            return None
-
+        handler = self.policy.challenge_handler
         challenge = self.store.get(challenge_id)
+
         if not challenge or challenge.spent:
             return None
 
-        if challenge.challenge_type != self.policy.challenge_handler.challenge_type:
+        if challenge.challenge_type != handler.challenge_type:
             return None
 
         if not hmac.compare_digest(
-            challenge.ip_hash,
-            self._hash_ip(request["remote_addr"]),
+            challenge.ip_hash, self.hash_ip(request["remote_addr"])
         ):
             return None
 
         try:
-            nonce_val = self.policy.challenge_handler.nonce_from_form(str(nonce))
+            answer = handler.nonce_from_form(str(nonce))
+            if not handler.verify(challenge.random_data, answer, challenge.difficulty):
+                return None
+            extra = handler.jwt_extra(challenge.random_data, answer)
         except (ValueError, TypeError):
             return None
-
-        if not self.policy.challenge_handler.verify(
-            challenge.random_data, nonce_val, challenge.difficulty
-        ):
-            return None
+        except Exception as error:
+            log.exception("challenge verification failed")
+            raise ChallengeError(str(error)) from error
 
         challenge.spent = True
         self.store.set(challenge)
+        return self.issue_cookie(request, challenge_id, extra)
 
-        now = time.time()
-        extra = self.policy.challenge_handler.jwt_extra(
-            challenge.random_data, nonce_val
-        )
-        claims: dict = {
-            "iat": int(now),
-            "exp": int(now + self.policy.cookie_ttl),
-            "ip": self._hash_ip(request["remote_addr"]),
+    def issue_cookie(self, request: Request, challenge_id: str, extra: dict) -> str:
+        now = int(time.time())
+        claims = {
+            **extra,
+            "iat": now,
+            "exp": now + self.policy.cookie_ttl,
             "cid": challenge_id,
-            "fid": self.generate_client_id(request),
         }
-        meta = {**(extra or {}), "remote_addr": request["remote_addr"]}
-        claims["_m"] = _meta_encrypt(meta, self.secret)
+        if self.policy.bind_ip:
+            claims["ip"] = self.hash_ip(request["remote_addr"])
         return jwt_encode(claims, self.secret)
-
-    _BRANDING = (
-        '<div class="branding">'
-        "Protected by "
-        '<a href="https://github.com/tn3w/flask-'
-        'Vouch" target="_blank">flask-Vouch</a>'
-        " · "
-        '<a href="https://github.com/tn3w" '
-        'target="_blank">tn3w</a>'
-        "</div>"
-    )
 
     def render_challenge(
         self,
         challenge: ChallengeBase,
-        redirect_to: str,
-        request: Request,
+        redirect: str,
         error: str = "",
     ) -> str:
-        handler = self.policy.challenge_handler
-        payload_dict = handler.render_payload(
-            challenge, self.policy.verify_path, redirect_to
-        )
-        csrf_token = self.generate_csrf_token(challenge.id, request)
-        payload_dict["csrfToken"] = csrf_token
-        payload = json.dumps(payload_dict)
-        branding = self._BRANDING if self.policy.branding else ""
-
-        safe = (
-            payload.replace("'", "\\u0027")
-            .replace("<", "\\u003c")
-            .replace(">", "\\u003e")
-        )
-
-        html = (
-            handler.template.replace("{{CHALLENGE_DATA}}", safe)
-            .replace("{{BRANDING}}", branding)
-            .replace("{{ERROR}}", error)
-            .replace("{{ACCENT_COLOR}}", self.policy.accent_color)
-        )
-        for key, value in payload_dict.items():
-            safe_value = (
-                str(value) if key == "captchaEmbed" else _html.escape(str(value))
+        policy = self.policy
+        try:
+            return render_challenge(
+                policy.challenge_handler,
+                challenge,
+                policy.verify_path,
+                redirect,
+                accent_color=policy.accent_color,
+                branding=policy.branding,
+                error=error,
+                template_dir=policy.template_dir,
             )
-            html = html.replace(f"{{{{{key}}}}}", safe_value)
-        return html
+        except Exception as error_:
+            log.exception("challenge rendering failed")
+            raise ChallengeError(str(error_)) from error_
+
+
+def _check_secret(secret: str | bytes | None) -> bytes:
+    if not secret:
+        raise ValueError("A secret is required (pass secret= or set SECRET_KEY)")
+
+    value = secret.encode() if isinstance(secret, str) else secret
+    if len(value) < MIN_SECRET_BYTES:
+        raise ValueError(f"secret must be at least {MIN_SECRET_BYTES} bytes")
+
+    return value

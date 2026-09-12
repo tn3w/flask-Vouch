@@ -277,7 +277,6 @@ self.onmessage = function (e) {
                         ['id', C.id],
                         ['nonce', nonce],
                         ['redirect', C.redirect],
-                        ['csrf_token', C.csrfToken],
                     ].forEach(function (p) {
                         var inp = document.createElement('input');
                         inp.type = 'hidden';

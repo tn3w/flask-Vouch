@@ -1,7 +1,12 @@
+from __future__ import annotations
+
+from importlib.metadata import PackageNotFoundError, version
+
 from flask_vouch.challenges import (
     SHA256,
     AudioCaptcha,
     ChainCaptcha,
+    ChallengeHandler,
     ChallengeType,
     CharacterCaptcha,
     CircleCaptcha,
@@ -12,19 +17,13 @@ from flask_vouch.challenges import (
     QuirkProbe,
     RotationCaptcha,
     SHA256Balloon,
+    SignedTokenHandler,
     SlidingCaptcha,
     ThirdPartyCaptchaChallenge,
     TraceCaptcha,
 )
-from flask_vouch.engine import (
-    Engine,
-    EngineKwargs,
-    Policy,
-    Rule,
-    jwt_decode,
-    jwt_encode,
-    load_policy,
-)
+from flask_vouch.crawlers import crawler_name, is_crawler
+from flask_vouch.engine import ChallengeError, Engine, EngineKwargs
 from flask_vouch.extras.third_party_captcha import (
     AltchaCreds,
     ArkoseCreds,
@@ -35,15 +34,22 @@ from flask_vouch.extras.third_party_captcha import (
     ThirdPartyCaptcha,
 )
 from flask_vouch.netset import NetSet
+from flask_vouch.policy import Policy, Request, Rule, load_policy
+from flask_vouch.tokens import jwt_decode, jwt_encode
 from flask_vouch.vouch import Vouch, VouchKwargs
 
-__version__ = "1.2.0"
+try:
+    __version__ = version("flask-Vouch")
+except PackageNotFoundError:  # source checkout without an install
+    __version__ = "0.0.0"
 
 __all__ = [
     "Vouch",
     "VouchKwargs",
     "AudioCaptcha",
     "ChainCaptcha",
+    "ChallengeError",
+    "ChallengeHandler",
     "ChallengeType",
     "Engine",
     "EngineKwargs",
@@ -56,14 +62,18 @@ __all__ = [
     "NavigatorAttestation",
     "QuirkProbe",
     "Policy",
+    "Request",
     "Rule",
     "SHA256",
     "SHA256Balloon",
+    "SignedTokenHandler",
     "SlidingCaptcha",
     "ThirdPartyCaptchaChallenge",
     "TraceCaptcha",
     "CupCaptcha",
     "load_policy",
+    "is_crawler",
+    "crawler_name",
     "jwt_encode",
     "jwt_decode",
     "ThirdPartyCaptcha",

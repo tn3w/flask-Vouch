@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import hashlib
 from dataclasses import dataclass
+from pathlib import Path
 
 from .base import (
     ChallengeBase,
@@ -11,6 +14,8 @@ from .base import (
 
 @dataclass
 class SHA256(ChallengeHandler):
+    template: str | Path | None = None
+
     @property
     def challenge_type(self) -> ChallengeType:
         return ChallengeType.SHA256

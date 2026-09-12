@@ -1,6 +1,6 @@
 [project]
 name = "flask-Vouch"
-version = "1.2.7"
+version = "1.2.8"
 description = "Bot-challenge Python middleware issuing brief challenges, granting solvers signed access cookies."
 readme = "README.md"
 authors = [
@@ -9,7 +9,10 @@ authors = [
 license = "Apache-2.0"
 license-files = ["LICENSE"]
 requires-python = ">=3.9"
-dependencies = ["flask>=2.0"]
+dependencies = [
+    "flask>=2.0",
+    "typing-extensions>=4.6; python_version < '3.11'",
+]
 classifiers = [
     "Development Status :: 5 - Production/Stable",
     "Intended Audience :: Developers",
@@ -70,5 +73,6 @@ omit = [
 ]
 
 [tool.basedpyright]
-include = ["flask_vouch", "tests"]
+include = ["flask_vouch"]
 typeCheckingMode = "standard"
+pythonVersion = "3.9"

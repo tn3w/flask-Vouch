@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 from .error_handler import ErrorHandler
 from .rate_limiter import RateLimiter
 from .third_party_captcha import (

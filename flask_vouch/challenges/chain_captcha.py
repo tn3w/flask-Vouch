@@ -1,5 +1,8 @@
+from __future__ import annotations
+
 import hashlib
 from dataclasses import dataclass
+from pathlib import Path
 
 from .base import (
     ChallengeBase,
@@ -19,6 +22,7 @@ def _chain(prefix: str, nonce: int, iterations: int) -> bytes:
 @dataclass
 class ChainCaptcha(ChallengeHandler):
     iterations: int = 1000
+    template: str | Path | None = None
 
     @property
     def challenge_type(self) -> ChallengeType:

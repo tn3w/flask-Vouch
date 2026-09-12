@@ -1,3 +1,5 @@
+from __future__ import annotations
+
 import json
 import re
 import time
@@ -16,9 +18,11 @@ from flask_vouch import (
     jwt_encode,
     load_policy,
 )
+from flask_vouch.challenges import ChallengeBase
 from flask_vouch.challenges.base import count_leading_zero_bits as _count_lzb
 from flask_vouch.challenges.sha256_balloon import _balloon
-from flask_vouch.engine import CHALLENGE_TTL, COOKIE_NAME, Challenge, Store
+from flask_vouch.policy import CHALLENGE_TTL, COOKIE_NAME, Request
+from flask_vouch.stores import ChallengeStore
 
 SECRET = "test-secret-key-32-bytes-long!!!"
 
@@ -134,8 +138,8 @@ class TestJWT:
 
 class TestStore:
     def test_set_and_get(self):
-        store = Store()
-        c = Challenge(
+        store = ChallengeStore()
+        c = ChallengeBase(
             id="abc",
             random_data="ff",
             difficulty=1,
@@ -146,11 +150,11 @@ class TestStore:
         assert store.get("abc") is c
 
     def test_missing_key(self):
-        assert Store().get("nope") is None
+        assert ChallengeStore().get("nope") is None
 
     def test_expiry(self):
-        store = Store()
-        c = Challenge(
+        store = ChallengeStore()
+        c = ChallengeBase(
             id="old",
             random_data="ff",
             difficulty=1,
@@ -307,7 +311,8 @@ class TestEngine:
         assert engine.check_cookie(token, request)
 
     def test_cookie_wrong_ip(self):
-        engine = self.make_engine()
+        engine = self.make_engine(policy=challenge_policy())
+        engine.policy.bind_ip = True
         cid, nonce = solve(engine, remote_addr="1.2.3.4")
         token = engine.validate_challenge(
             cid, nonce, make_request(remote_addr="1.2.3.4")
@@ -322,7 +327,7 @@ class TestEngine:
         engine = self.make_engine()
         req = make_request()
         challenge = engine.issue_challenge(4, req)
-        html = engine.render_challenge(challenge, "/", req)
+        html = engine.render_challenge(challenge, "/")
         assert challenge.id in html
         assert challenge.random_data in html
 

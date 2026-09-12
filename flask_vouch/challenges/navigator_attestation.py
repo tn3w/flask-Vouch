@@ -1,8 +1,11 @@
+from __future__ import annotations
+
 import random
 import re as _re
 import secrets
 import time
 from dataclasses import dataclass, field
+from pathlib import Path
 
 from .base import ChallengeBase, ChallengeHandler, ChallengeType
 from .scoring import (
@@ -567,12 +570,15 @@ def _process(session: _Session, message: dict, challenge: ChallengeBase) -> dict
     return {"type": "result", "token": token}
 
 
+@dataclass
 class NavigatorAttestation(ChallengeHandler):
+    template: str | Path | None = None
+
     ROUND_COUNT = 3
     ROUND_TIMEOUT = 45
     MIN_SCORE = 0.5
 
-    def __init__(self) -> None:
+    def __post_init__(self) -> None:
         self._sessions = SessionStore(self.ROUND_TIMEOUT)
 
     @property
