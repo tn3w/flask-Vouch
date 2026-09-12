@@ -34,6 +34,10 @@ class EngineKwargs(TypedDict, total=False):
     rules_file: str | None
     blocklist: Blocklist
     challenge_threshold: int
+    deny_threshold: int
+    difficulty_step: int
+    max_difficulty_bonus: int
+    verify_bots: bool
     default_difficulty: int
     challenge_handler: ChallengeHandler
     cookie_name: str
@@ -45,6 +49,8 @@ class EngineKwargs(TypedDict, total=False):
     template_dir: str | Path | None
     cookie_secure: bool
     cookie_samesite: str
+    cookie_domain: str | None
+    cookie_refresh: bool
     bind_ip: bool
     max_challenge_failures: int
     max_challenge_requests: int
@@ -131,9 +137,9 @@ class Engine:
         self, challenge_id: str, nonce, request: Request
     ) -> str | None:
         handler = self.policy.challenge_handler
-        challenge = self.store.get(challenge_id)
+        challenge = self.store.consume(challenge_id)
 
-        if not challenge or challenge.spent:
+        if not challenge:
             return None
 
         if challenge.challenge_type != handler.challenge_type:
@@ -155,8 +161,6 @@ class Engine:
             log.exception("challenge verification failed")
             raise ChallengeError(str(error)) from error
 
-        challenge.spent = True
-        self.store.set(challenge)
         return self.issue_cookie(request, challenge_id, extra)
 
     def issue_cookie(self, request: Request, challenge_id: str, extra: dict) -> str:
@@ -170,6 +174,20 @@ class Engine:
         if self.policy.bind_ip:
             claims["ip"] = self.hash_ip(request["remote_addr"])
         return jwt_encode(claims, self.secret)
+
+    def stale_cookie(self, claims: dict) -> bool:
+        """True once a valid cookie is past half its life and worth reissuing."""
+        if not self.policy.cookie_refresh:
+            return False
+        return time.time() - claims.get("iat", 0) > self.policy.cookie_ttl / 2
+
+    def renew_cookie(self, request: Request, claims: dict) -> str:
+        extra = {
+            key: value
+            for key, value in claims.items()
+            if key not in ("iat", "exp", "ip", "cid")
+        }
+        return self.issue_cookie(request, str(claims.get("cid", "")), extra)
 
     def render_challenge(
         self,

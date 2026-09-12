@@ -17,13 +17,23 @@ log = logging.getLogger("flask_vouch.redis")
 
 
 class RedisChallengeStore:
-    def __init__(self, client, prefix="tollbooth", ttl=CHALLENGE_TTL):
+    def __init__(self, client, prefix="vouch", ttl=CHALLENGE_TTL):
         self._r = client
         self._prefix = prefix
         self._ttl = ttl
 
     def _key(self, cid):
         return f"{self._prefix}:c:{cid}"
+
+    def consume(self, cid):
+        """Redeem a challenge exactly once. ``GETDEL`` reads and removes it in a
+        single atomic command, so only one worker can ever see it (Redis 6.2+)."""
+        raw = self._r.getdel(self._key(cid))
+        if not raw:
+            return None
+        challenge = ChallengeBase(**json.loads(raw))
+        challenge.spent = True
+        return challenge
 
     def set(self, challenge):
         elapsed = time.time() - challenge.created_at
@@ -47,7 +57,7 @@ class RedisEngine(Engine):
         client,
         *,
         secret=None,
-        prefix="tollbooth",
+        prefix="vouch",
         auto_sync=True,
         **kwargs,
     ):
@@ -57,7 +67,7 @@ class RedisEngine(Engine):
 
         secret = self._resolve_secret(secret)
         super().__init__(secret, **kwargs)
-        self._push_config()
+        self._init_config()
 
         self.store = RedisChallengeStore(client, prefix, self.policy.challenge_ttl)
         self.rate_limiter = RedisRateLimiter(client, prefix)
@@ -83,17 +93,28 @@ class RedisEngine(Engine):
             return stored if isinstance(stored, bytes) else stored.encode()
         raise ValueError("No secret provided and none found in Redis")
 
-    def _push_config(self):
+    def _config_json(self):
         cfg = {
             f.name: getattr(self.policy, f.name)
             for f in fields(Policy)
             if f.name not in ("rules", "challenge_handler")
         }
-        self._r.set(self._rkey("config"), json.dumps(cfg))
-        self._r.set(
-            self._rkey("rules"),
-            json.dumps([asdict(r) for r in self.policy.rules]),
-        )
+        return json.dumps(cfg, default=str)
+
+    def _rules_json(self):
+        return json.dumps([asdict(r) for r in self.policy.rules])
+
+    def _init_config(self):
+        """The first worker seeds the shared policy; every later one adopts what
+        is already there, so starting a worker cannot wipe a live ruleset."""
+        if self._r.set(self._rkey("config"), self._config_json(), nx=True):
+            self._r.set(self._rkey("rules"), self._rules_json())
+            return
+        self._pull_config()
+
+    def _push_config(self):
+        self._r.set(self._rkey("config"), self._config_json())
+        self._r.set(self._rkey("rules"), self._rules_json())
 
     def _pull_config(self):
         raw_cfg = self._r.get(self._rkey("config"))
@@ -145,16 +166,14 @@ class RedisEngine(Engine):
 
 
 _LUA_RATE_HIT = """
-local cur = tonumber(redis.call('GET', KEYS[1]) or '0')
-if cur >= tonumber(ARGV[1]) then return 0 end
 local n = redis.call('INCR', KEYS[1])
 if n == 1 then redis.call('EXPIRE', KEYS[1], ARGV[2]) end
-return 1
+return n <= tonumber(ARGV[1]) and 1 or 0
 """
 
 
 class RedisRateLimiter:
-    def __init__(self, client, prefix="tollbooth"):
+    def __init__(self, client, prefix="vouch"):
         self._prefix = prefix
         self._hit = client.register_script(_LUA_RATE_HIT)
 
@@ -163,31 +182,29 @@ class RedisRateLimiter:
         return bool(self._hit(keys=[rkey], args=[limit, window]))
 
 
-_LUA_IP_CHECK = """
-local ip = ARGV[1]
-local r = redis.call(
+_RANGE_SEPARATOR = "~"
+
+# Members are "<start>~<end>", so the greatest member at or below the address
+# carries its own end and no second lookup is needed. The \255 suffix on the max
+# keeps a member whose start equals the address inside the range.
+_LUA_IP_CHECK = r"""
+local hit = redis.call(
     'ZREVRANGEBYLEX', KEYS[1],
-    '[' .. ip, '-', 'LIMIT', 0, 1
+    '[' .. ARGV[1] .. '\255', '-', 'LIMIT', 0, 1
 )
-if #r == 0 then return 0 end
-local e = redis.call('HGET', KEYS[2], r[1])
-if e and ip <= e then return 1 end
-return 0
+if #hit == 0 then return 0 end
+return ARGV[1] <= string.sub(hit[1], #ARGV[1] + 2) and 1 or 0
 """
 
 
 class RedisNetSet:
-    def __init__(self, client, prefix="tollbooth"):
+    def __init__(self, client, prefix="vouch"):
         self._r = client
         self._prefix = prefix
         self._check = client.register_script(_LUA_IP_CHECK)
 
-    def _keys(self, version):
-        v = "v4" if version == 4 else "v6"
-        return (
-            f"{self._prefix}:bl:{v}:z",
-            f"{self._prefix}:bl:{v}:h",
-        )
+    def _key(self, version):
+        return f"{self._prefix}:bl:{'v4' if version == 4 else 'v6'}"
 
     def _hex(self, val, version):
         width = 8 if version == 4 else 32
@@ -198,14 +215,16 @@ class RedisNetSet:
         v4, v6 = parse_netset(text)
 
         for version, ranges in [(4, v4), (6, v6)]:
-            zkey, hkey = self._keys(version)
-            self._r.delete(zkey, hkey)
+            key = self._key(version)
+            self._r.delete(key)
             pipe = self._r.pipeline(transaction=False)
             for i, (start, end) in enumerate(ranges):
-                s = self._hex(start, version)
-                e = self._hex(end, version)
-                pipe.zadd(zkey, {s: 0})
-                pipe.hset(hkey, s, e)
+                member = (
+                    f"{self._hex(start, version)}"
+                    f"{_RANGE_SEPARATOR}"
+                    f"{self._hex(end, version)}"
+                )
+                pipe.zadd(key, {member: 0})
                 if i % 5000 == 4999:
                     pipe.execute()
             pipe.execute()
@@ -215,11 +234,8 @@ class RedisNetSet:
             addr = ipaddress.ip_address(ip)
         except ValueError:
             return False
-        zkey, hkey = self._keys(addr.version)
         hex_ip = self._hex(int(addr), addr.version)
-        return bool(
-            self._check(keys=[zkey, hkey], args=[hex_ip]),
-        )
+        return bool(self._check(keys=[self._key(addr.version)], args=[hex_ip]))
 
     def start_updates(self, interval=86400, source=NETSET_URL):
         lock_key = f"{self._prefix}:bl:lock"
@@ -241,6 +257,4 @@ class RedisNetSet:
         return thread
 
     def __len__(self):
-        v4z, _ = self._keys(4)
-        v6z, _ = self._keys(6)
-        return self._r.zcard(v4z) + self._r.zcard(v6z)
+        return self._r.zcard(self._key(4)) + self._r.zcard(self._key(6))

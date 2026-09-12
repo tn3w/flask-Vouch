@@ -615,3 +615,388 @@ class TestFlask:
                 headers={"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)"},
             )
             assert resp.status_code == 200
+
+
+# --- Weighted escalation ---
+
+
+class TestWeightEscalation:
+    def policy(self, **kwargs):
+        return Policy(
+            rules=[
+                Rule(name="c", action="challenge", user_agent="Mozilla"),
+                Rule(name="w1", action="weigh", weight=4, headers={"X-A": ".*"}),
+                Rule(name="w2", action="weigh", weight=4, headers={"X-B": ".*"}),
+            ],
+            **kwargs,
+        )
+
+    def test_weigh_rules_run_after_a_challenge_rule(self):
+        action, difficulty, rule = self.policy().evaluate(
+            make_request(headers={"X-A": "1", "X-B": "1"})
+        )
+        assert (action, difficulty, rule.name) == ("challenge", 12, "c")
+
+    def test_no_signals_keeps_base_difficulty(self):
+        action, difficulty, _ = self.policy().evaluate(make_request())
+        assert (action, difficulty) == ("challenge", 10)
+
+    def test_bonus_is_capped(self):
+        policy = self.policy(max_difficulty_bonus=1)
+        _, difficulty, _ = policy.evaluate(
+            make_request(headers={"X-A": "1", "X-B": "1"})
+        )
+        assert difficulty == 11
+
+    def test_deny_threshold_overrides_challenge(self):
+        policy = self.policy(deny_threshold=8)
+        action, _, _ = policy.evaluate(make_request(headers={"X-A": "1", "X-B": "1"}))
+        assert action == "deny"
+
+    def test_deny_threshold_off_by_default(self):
+        assert Policy(rules=[]).deny_threshold == 0
+
+    def test_difficulty_step_zero_disables_bonus(self):
+        policy = self.policy(difficulty_step=0)
+        _, difficulty, _ = policy.evaluate(
+            make_request(headers={"X-A": "1", "X-B": "1"})
+        )
+        assert difficulty == 10
+
+
+# --- missing_headers ---
+
+
+class TestMissingHeaders:
+    def rule(self):
+        return Rule(name="m", missing_headers=["Accept", "Accept-Language"])
+
+    def test_matches_when_all_absent(self):
+        assert self.rule().matches(make_request(headers={}))
+
+    def test_matches_when_present_but_empty(self):
+        assert self.rule().matches(make_request(headers={"Accept": ""}))
+
+    def test_no_match_when_one_present(self):
+        assert not self.rule().matches(make_request(headers={"Accept": "text/html"}))
+
+
+# --- Verified bots ---
+
+
+class TestVerifiedBots:
+    def request(self, user_agent="Googlebot/2.1"):
+        return make_request(user_agent=user_agent)
+
+    def test_operator_read_from_user_agent(self):
+        from flask_vouch import bot_operator
+
+        assert bot_operator("Mozilla/5.0 (compatible; Googlebot/2.1)") == "googlebot"
+        assert bot_operator("Mozilla/5.0 (compatible; Bingbot/2.0)") == "bingbot"
+        assert bot_operator("Mozilla/5.0") is None
+
+    def test_unknown_operator_never_verifies(self):
+        from flask_vouch import verify_operator
+
+        assert not verify_operator("nosuchbot", "1.2.3.4")
+
+    def test_rule_rejects_unverifiable_claim(self, monkeypatch):
+        import flask_vouch.policy as policy_module
+
+        monkeypatch.setattr(policy_module, "is_verified_bot", lambda ua, ip: False)
+        assert not Rule(name="v", verified_bot=True).matches(self.request())
+
+    def test_rule_accepts_verified_claim(self, monkeypatch):
+        import flask_vouch.policy as policy_module
+
+        monkeypatch.setattr(policy_module, "is_verified_bot", lambda ua, ip: True)
+        assert Rule(name="v", verified_bot=True).matches(self.request())
+
+    def test_verify_bots_off_falls_back_to_user_agent(self, monkeypatch):
+        import flask_vouch.policy as policy_module
+
+        monkeypatch.setattr(policy_module, "is_verified_bot", lambda ua, ip: False)
+        rule = Rule(name="v", verified_bot=True)
+        assert rule.matches(self.request(), verify_bots=False)
+
+    def test_verification_result_is_cached(self, monkeypatch):
+        import flask_vouch.crawlers as crawlers
+
+        calls = []
+        monkeypatch.setattr(crawlers, "_verify_cache", crawlers._VerifyCache())
+        monkeypatch.setattr(
+            crawlers, "_confirm", lambda op, ip: calls.append(ip) or True
+        )
+        assert crawlers.verify_operator("googlebot", "9.9.9.9")
+        assert crawlers.verify_operator("googlebot", "9.9.9.9")
+        assert len(calls) == 1
+
+
+# --- Response hardening, refresh, metrics ---
+
+
+class TestHardening:
+    def app(self, **kwargs):
+        app = flask.Flask(__name__)
+        app.config["TESTING"] = True
+        bouncer = Vouch(app, secret=SECRET, **kwargs)
+
+        @app.route("/")
+        def index():
+            return "ok"
+
+        return app, bouncer
+
+    def test_challenge_page_is_not_indexable(self):
+        app, _ = self.app()
+        resp = app.test_client().get("/", headers={"User-Agent": "curl/8.0"})
+        assert resp.headers["X-Robots-Tag"] == "noindex, nofollow"
+        assert resp.headers["Referrer-Policy"] == "no-referrer"
+
+    def test_rate_limited_response_carries_retry_after(self):
+        app, bouncer = self.app(max_challenge_requests=1)
+        client = app.test_client()
+        client.get("/", headers={"User-Agent": "curl/8.0"})
+        resp = client.get("/", headers={"User-Agent": "curl/8.0"})
+        assert resp.status_code == 429
+        assert resp.headers["Retry-After"] == str(
+            bouncer.engine.policy.rate_limit_window
+        )
+
+    def test_forbidden_response_is_not_indexable(self):
+        app, _ = self.app(policy=Policy(rules=[Rule(name="d", action="deny")]))
+        resp = app.test_client().get("/")
+        assert resp.status_code == 403
+        assert resp.headers["X-Robots-Tag"] == "noindex, nofollow"
+
+    def stale_cookie(self, engine, age):
+        request = make_request()
+        claims = jwt_decode(engine.issue_cookie(request, "cid", {}), engine.secret)
+        claims["iat"] = int(time.time()) - age
+        return jwt_encode(claims, engine.secret)
+
+    def test_old_cookie_is_reissued(self):
+        app, bouncer = self.app()
+        engine = bouncer.engine
+        client = app.test_client()
+        client.set_cookie(
+            COOKIE_NAME, self.stale_cookie(engine, engine.policy.cookie_ttl - 10)
+        )
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert COOKIE_NAME in resp.headers.get("Set-Cookie", "")
+
+    def test_fresh_cookie_is_left_alone(self):
+        app, bouncer = self.app()
+        client = app.test_client()
+        client.set_cookie(COOKIE_NAME, self.stale_cookie(bouncer.engine, 0))
+        resp = client.get("/")
+        assert resp.status_code == 200
+        assert "Set-Cookie" not in resp.headers
+
+    def test_refresh_can_be_turned_off(self):
+        app, bouncer = self.app(cookie_refresh=False)
+        engine = bouncer.engine
+        client = app.test_client()
+        client.set_cookie(
+            COOKIE_NAME, self.stale_cookie(engine, engine.policy.cookie_ttl - 10)
+        )
+        assert "Set-Cookie" not in client.get("/").headers
+
+    def test_cookie_domain_is_applied(self):
+        app, _ = self.app(cookie_domain=".example.com")
+        resp = app.test_client().get("/", headers={"User-Agent": "curl/8.0"})
+        assert resp.status_code == 200
+
+    def test_metrics_count_decisions(self):
+        app, bouncer = self.app()
+        app.test_client().get("/", headers={"User-Agent": "curl/8.0"})
+        assert bouncer.metrics.snapshot()["challenge"] == 1
+        bouncer.metrics.reset()
+        assert bouncer.metrics.snapshot() == {}
+
+    def test_on_decision_hook_receives_rule(self):
+        seen: list[Any] = []
+        app, _ = self.app(
+            policy=Policy(rules=[Rule(name="d", action="deny")]),
+            on_decision=lambda action, request, rule: seen.append((action, rule.name)),
+        )
+        app.test_client().get("/")
+        assert seen == [("deny", "d")]
+
+
+# --- Challenges are one-shot ---
+
+
+class TestChallengeConsumption:
+    def engine(self):
+        from flask_vouch.challenges import SHA256
+
+        return Engine(
+            secret=SECRET, policy=Policy(rules=[], challenge_handler=SHA256())
+        )
+
+    def solved(self, engine, request):
+        challenge = engine.issue_challenge(0, request)
+        handler = engine.policy.challenge_handler
+        nonce = next(
+            n
+            for n in range(200_000)
+            if handler.verify(challenge.random_data, n, challenge.difficulty)
+        )
+        return challenge, str(nonce)
+
+    def test_solution_redeems_once(self):
+        engine = self.engine()
+        request = make_request()
+        challenge, nonce = self.solved(engine, request)
+        assert engine.validate_challenge(challenge.id, nonce, request)
+        assert engine.validate_challenge(challenge.id, nonce, request) is None
+
+    def test_concurrent_redemptions_yield_one_cookie(self):
+        from concurrent.futures import ThreadPoolExecutor
+
+        engine = self.engine()
+        request = make_request()
+        challenge, nonce = self.solved(engine, request)
+
+        with ThreadPoolExecutor(16) as pool:
+            tokens = list(
+                pool.map(
+                    lambda _: engine.validate_challenge(challenge.id, nonce, request),
+                    range(16),
+                )
+            )
+        assert sum(token is not None for token in tokens) == 1
+
+    def test_wrong_answer_burns_the_challenge(self):
+        engine = self.engine()
+        request = make_request()
+        challenge = engine.issue_challenge(0, request)
+        assert engine.validate_challenge(challenge.id, "0", request) is None
+        assert engine.store.consume(challenge.id) is None
+
+
+# --- Extras hardening ---
+
+
+class TestExtrasHardening:
+    def app(self, **kwargs):
+        from flask_vouch.extras import RateLimiter
+
+        app = flask.Flask(__name__)
+        app.config["TESTING"] = True
+        limiter = RateLimiter(**kwargs)
+        return app, limiter
+
+    def test_forwarded_for_is_ignored_without_trusted_proxies(self):
+        app, limiter = self.app(default="2/minute")
+        limiter.init_flask(app)
+        app.route("/")(lambda: "ok")
+        client = app.test_client()
+        codes = [
+            client.get("/", headers={"X-Forwarded-For": f"9.9.9.{n}"}).status_code
+            for n in range(4)
+        ]
+        assert codes == [200, 200, 429, 429]
+
+    def test_forwarded_for_honoured_when_trusted(self):
+        app, limiter = self.app(default="2/minute", trusted_proxies=1)
+        limiter.init_flask(app)
+        app.route("/")(lambda: "ok")
+        client = app.test_client()
+        codes = [
+            client.get("/", headers={"X-Forwarded-For": f"9.9.9.{n}"}).status_code
+            for n in range(4)
+        ]
+        assert codes == [200] * 4
+
+    def test_retry_after_matches_the_window(self):
+        app, limiter = self.app(default="1/day")
+        limiter.init_flask(app)
+        app.route("/")(lambda: "ok")
+        client = app.test_client()
+        client.get("/")
+        assert client.get("/").headers["Retry-After"] == "86400"
+
+    def test_route_limit_replaces_the_global_budget(self):
+        app, limiter = self.app(default="2/minute")
+
+        @app.route("/x")
+        @limiter.limit("10/minute")
+        def x():
+            return "ok"
+
+        limiter.init_flask(app)
+        client = app.test_client()
+        assert [client.get("/x").status_code for _ in range(5)] == [200] * 5
+
+    def test_error_handler_styles_vouch_refusals(self):
+        from flask_vouch.extras import ErrorHandler
+
+        app = flask.Flask(__name__)
+        app.config["TESTING"] = True
+        vouch = Vouch(app, secret=SECRET, policy=Policy(rules=[Rule("d", "deny")]))
+        ErrorHandler(vouch=vouch).init_flask(app)
+        app.route("/")(lambda: "ok")
+
+        resp = app.test_client().get("/")
+        assert resp.status_code == 403
+        assert resp.headers["Content-Type"] == "text/html; charset=utf-8"
+        assert b"Forbidden" in resp.data and len(resp.data) > 200
+
+    def test_error_handler_escapes_and_substitutes_once(self):
+        from flask_vouch.extras import ErrorHandler
+
+        handler = ErrorHandler(template="<p>{{detail}}</p>")
+        assert handler.render(404, detail="<b>x</b>") == "<p>&lt;b&gt;x&lt;/b&gt;</p>"
+        assert handler.render(404, detail="{{title}}") == "<p>{{title}}</p>"
+
+
+# --- Altcha ---
+
+
+class TestAltcha:
+    def solve(self, altcha, hardness=1):
+        import hashlib
+        from base64 import b64encode
+
+        challenge = altcha.create_challenge(hardness)
+        number = next(
+            n
+            for n in range(200_000)
+            if hashlib.sha256((challenge["salt"] + str(n)).encode()).hexdigest()
+            == challenge["challenge"]
+        )
+        return b64encode(json.dumps({**challenge, "number": number}).encode()).decode()
+
+    def altcha(self, **kwargs):
+        from flask_vouch.extras.third_party_captcha import _Altcha
+
+        return _Altcha(b"k" * 32, **kwargs)
+
+    def test_valid_solution_passes(self):
+        altcha = self.altcha()
+        assert altcha.verify_challenge(self.solve(altcha))
+
+    def test_replay_is_rejected(self):
+        altcha = self.altcha()
+        payload = self.solve(altcha)
+        assert altcha.verify_challenge(payload)
+        assert not altcha.verify_challenge(payload)
+
+    def test_expired_solution_is_rejected(self):
+        altcha = self.altcha(ttl=-1)
+        assert not altcha.verify_challenge(self.solve(altcha))
+
+    def test_forged_signature_is_rejected(self):
+        from base64 import b64decode, b64encode
+
+        altcha = self.altcha()
+        data = json.loads(b64decode(self.solve(altcha)))
+        data["signature"] = "0" * 64
+        forged = b64encode(json.dumps(data).encode()).decode()
+        assert not altcha.verify_challenge(forged)
+
+    def test_garbage_is_rejected(self):
+        assert not self.altcha().verify_challenge("not-base64-json")

@@ -4,11 +4,13 @@ import hashlib
 import hmac
 import html
 import json
+import time
 import urllib.parse
 import urllib.request
 from base64 import b64decode
 from dataclasses import dataclass
 from secrets import randbelow, token_hex
+from threading import Lock
 
 
 class _Safe(str):
@@ -149,40 +151,73 @@ def _altcha_theme_js(theme: str) -> str:
     )
 
 
+ALTCHA_TTL = 600
+
+
 class _Altcha:
-    def __init__(self, secret: bytes):
+    """Self-hosted Altcha proof of work.
+
+    The salt carries an ``expires`` stamp the way upstream Altcha does, and every
+    redeemed challenge is remembered until it expires, so a solved payload cannot
+    be replayed. ``seen`` is per process; behind several workers a payload stays
+    replayable across them until it expires.
+    """
+
+    def __init__(self, secret: bytes, ttl: int = ALTCHA_TTL):
         self.secret = secret
+        self.ttl = ttl
+        self._seen: dict[str, float] = {}
+        self._lock = Lock()
+
+    def _sign(self, challenge: str) -> str:
+        return hmac.new(self.secret, challenge.encode(), hashlib.sha256).hexdigest()
 
     def create_challenge(self, hardness=1) -> dict:
-        salt = token_hex(12)
+        expires = int(time.time()) + self.ttl
+        salt = f"{token_hex(12)}?expires={expires}"
         number = 10000 * hardness + randbelow(15000 * hardness + 1)
         challenge = hashlib.sha256((salt + str(number)).encode()).hexdigest()
-        signature = hmac.new(
-            self.secret, challenge.encode(), hashlib.sha256
-        ).hexdigest()
         return {
             "algorithm": "SHA-256",
             "challenge": challenge,
             "salt": salt,
-            "signature": signature,
+            "signature": self._sign(challenge),
         }
+
+    def _expires_from(self, salt: str) -> float:
+        _, _, query = salt.partition("?")
+        return float(urllib.parse.parse_qs(query).get("expires", [0])[0])
+
+    def _claim(self, challenge: str, expires: float) -> bool:
+        now = time.time()
+        with self._lock:
+            for stale in [k for k, v in self._seen.items() if v < now]:
+                del self._seen[stale]
+            if challenge in self._seen:
+                return False
+            self._seen[challenge] = expires
+            return True
 
     def verify_challenge(self, payload: str) -> bool:
         try:
             data = json.loads(b64decode(payload))
-            challenge = hashlib.sha256(
+            expected = hashlib.sha256(
                 (data["salt"] + str(data["number"])).encode()
             ).hexdigest()
-            signature = hmac.new(
-                self.secret, data["challenge"].encode(), hashlib.sha256
-            ).hexdigest()
-            return (
-                data["algorithm"] == "SHA-256"
-                and challenge == data["challenge"]
-                and signature == data["signature"]
-            )
-        except (json.JSONDecodeError, KeyError, ValueError):
+            expires = self._expires_from(data["salt"])
+        except (json.JSONDecodeError, KeyError, ValueError, TypeError):
             return False
+
+        if data.get("algorithm") != "SHA-256" or expires < time.time():
+            return False
+
+        if not hmac.compare_digest(expected, data["challenge"]):
+            return False
+
+        if not hmac.compare_digest(self._sign(data["challenge"]), data["signature"]):
+            return False
+
+        return self._claim(data["challenge"], expires)
 
 
 def _call_provider_api(provider: str, token: str, secret: str) -> bool:

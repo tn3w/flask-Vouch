@@ -10,6 +10,7 @@ from urllib.request import urlopen
 log = logging.getLogger("flask_vouch.netset")
 
 NETSET_URL = "https://github.com/tn3w/plevin/releases/latest/download/blocklist.netset"
+FETCH_TIMEOUT = 30
 
 
 def _parse_line(line):
@@ -60,7 +61,7 @@ def _load_text(source: str, cache: Path | None) -> str:
     if cache and cache.exists():
         log.debug("Loading netset from cache: %s", cache)
         return cache.read_text()
-    with urlopen(source) as resp:
+    with urlopen(source, timeout=FETCH_TIMEOUT) as resp:
         text = resp.read().decode()
     if cache:
         cache.parent.mkdir(parents=True, exist_ok=True)
@@ -87,19 +88,32 @@ def _contains(starts, ends, val):
 
 
 class NetSet:
+    _loaded = False
+    _warned = False
+
     def __init__(self, source: str = NETSET_URL):
         self._source = source
         self._cache = _cache_path_for(source)
+        self._loaded = False
+        self._warned = False
         self._v4_starts: list[int] = []
         self._v4_ends: list[int] = []
         self._v6_starts: list[int] = []
         self._v6_ends: list[int] = []
 
     @classmethod
-    def from_sources(cls, sources: str | list[str]) -> "NetSet | list[NetSet]":
-        if isinstance(sources, str):
-            return cls(sources)
-        return [cls(s) for s in sources]
+    def from_sources(
+        cls, sources: str | list[str], load: bool = True
+    ) -> "NetSet | list[NetSet]":
+        """Build one netset per source and load them, since an unloaded netset
+        silently matches nothing. Pass ``load=False`` to defer."""
+        made: list[NetSet] = [
+            cls(s) for s in ([sources] if isinstance(sources, str) else sources)
+        ]
+        if load:
+            for netset in made:
+                netset.load()
+        return made[0] if isinstance(sources, str) else made
 
     def load(self, force: bool = False):
         cache = None if force else self._cache
@@ -109,8 +123,23 @@ class NetSet:
         s6, e6 = zip(*v6) if v6 else ([], [])
         self._v4_starts, self._v4_ends = list(s4), list(e4)
         self._v6_starts, self._v6_ends = list(s6), list(e6)
+        self._loaded = True
+
+    @property
+    def loaded(self) -> bool:
+        return self._loaded
+
+    def _warn_unloaded(self) -> None:
+        if self._loaded or self._warned:
+            return
+        self._warned = True
+        log.warning(
+            "NetSet(%s) queried before load(), matching nothing; call load() first",
+            self._source,
+        )
 
     def contains(self, ip):
+        self._warn_unloaded()
         try:
             addr = ipaddress.ip_address(ip)
         except ValueError:

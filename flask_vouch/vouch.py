@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import ipaddress
 import json
 import logging
 import re
@@ -13,8 +12,14 @@ import flask
 
 from flask_vouch.crawlers import crawler_name, is_crawler
 from flask_vouch.engine import ChallengeError, Engine, EngineKwargs
-from flask_vouch.policy import Request, blocklist_match
-from flask_vouch.rendering import RETRY_ERROR_HTML, challenge_headers, safe_redirect
+from flask_vouch.policy import Request, blocklist_match, client_ip, parse_trusted
+from flask_vouch.rendering import (
+    NOINDEX,
+    RETRY_ERROR_HTML,
+    challenge_headers,
+    safe_redirect,
+)
+from flask_vouch.stores import Metrics
 
 if TYPE_CHECKING:
     from typing_extensions import Unpack
@@ -23,12 +28,19 @@ log = logging.getLogger("flask_vouch")
 
 _PREFIX = "VOUCH_"
 
-_NETWORK_TYPES = (ipaddress.IPv4Network, ipaddress.IPv6Network)
-
 _JSON_CT = {
     "Content-Type": "application/json",
     "Cache-Control": "no-store",
+    "X-Robots-Tag": NOINDEX,
 }
+
+_TEXT_CT = {
+    "Content-Type": "text/plain; charset=utf-8",
+    "Cache-Control": "no-store",
+    "X-Robots-Tag": NOINDEX,
+}
+
+_REFRESH_KEY = "vouch_refresh"
 
 
 class VouchKwargs(EngineKwargs, total=False):
@@ -37,6 +49,7 @@ class VouchKwargs(EngineKwargs, total=False):
     exclude: list[str] | None
     json_mode: bool | Callable[[Request], bool]
     trusted_proxies: int | list[str] | None
+    on_decision: Callable[[str, Request, object], None] | None
 
 
 def _config_kwargs(app_config) -> dict:
@@ -45,52 +58,6 @@ def _config_kwargs(app_config) -> dict:
         for key, value in app_config.items()
         if key.startswith(_PREFIX)
     }
-
-
-def _networks(values: list) -> list:
-    return [
-        (
-            value
-            if isinstance(value, _NETWORK_TYPES)
-            else ipaddress.ip_network(value, False)
-        )
-        for value in values
-    ]
-
-
-def _parse_trusted(trusted: int | list | str | None) -> int | list | None:
-    if trusted is None or isinstance(trusted, int):
-        return trusted
-    return _networks([trusted] if isinstance(trusted, str) else trusted)
-
-
-def _in_networks(address: str, networks: list) -> bool:
-    try:
-        parsed = ipaddress.ip_address(address)
-    except ValueError:
-        return False
-    return any(parsed in network for network in networks)
-
-
-def client_ip(peer: str, forwarded: str, trusted: int | list | None) -> str:
-    """Resolve the client address, trusting ``X-Forwarded-For`` only as configured.
-
-    ``trusted`` is the number of proxies in front of the app, or the networks
-    those proxies use. Without it the header is ignored, since anyone can set it.
-    """
-    if not trusted or not forwarded:
-        return peer
-
-    chain = [part.strip() for part in forwarded.split(",") if part.strip()] + [peer]
-
-    if isinstance(trusted, int):
-        return chain[max(0, len(chain) - 1 - trusted)]
-
-    networks = trusted if isinstance(trusted[0], _NETWORK_TYPES) else _networks(trusted)
-    for candidate in reversed(chain):
-        if not _in_networks(candidate, networks):
-            return candidate
-    return chain[0]
 
 
 def _to_request(trusted_proxies: int | list | None = None) -> Request:
@@ -148,10 +115,14 @@ def _make_claims(user_agent: str, **overrides) -> types.SimpleNamespace:
     )
 
 
-def _error(use_json: bool, status: int, message: str) -> _Response:
-    if use_json:
-        return _Response(status, dict(_JSON_CT), json.dumps({"error": message.lower()}))
-    return _Response(status, {"Content-Type": "text/plain"}, message)
+def _error(
+    use_json: bool, status: int, message: str, retry_after: int = 0
+) -> _Response:
+    headers = dict(_JSON_CT) if use_json else dict(_TEXT_CT)
+    if retry_after:
+        headers["Retry-After"] = str(retry_after)
+    body = json.dumps({"error": message.lower()}) if use_json else message
+    return _Response(status, headers, body)
 
 
 class Vouch:
@@ -185,6 +156,9 @@ class Vouch:
         self._trusted_proxies: int | list | None = None
         self._exempt_endpoints: set[str] = set()
         self._engine: Engine | None = None
+        self._on_decision: Callable | None = None
+        self.metrics = Metrics()
+        self.error_renderer: Callable[[int], str] | None = None
 
         if kwargs.get("secret") or kwargs.get("engine"):
             self._configure(dict(kwargs))
@@ -195,7 +169,8 @@ class Vouch:
     def _configure(self, options: dict) -> None:
         self._excludes = [re.compile(p) for p in (options.pop("exclude", None) or [])]
         self._json_mode = options.pop("json_mode", False)
-        self._trusted_proxies = _parse_trusted(options.pop("trusted_proxies", None))
+        self._trusted_proxies = parse_trusted(options.pop("trusted_proxies", None))
+        self._on_decision = options.pop("on_decision", None)
         engine = options.pop("engine", None)
         secret = options.pop("secret", None)
         self._engine = engine or Engine(secret, **options)
@@ -213,6 +188,7 @@ class Vouch:
             self._configure(merged)
 
         app.before_request(self._check)
+        app.after_request(self._refresh_cookie)
         app.extensions["vouch"] = self
 
     @property
@@ -225,6 +201,24 @@ class Vouch:
     def is_verify(self, method: str, path: str) -> bool:
         return method == "POST" and path == self.verify_path
 
+    def _record(self, action: str, request: Request, rule=None) -> None:
+        self.metrics.count(action)
+        if self._on_decision:
+            self._on_decision(action, request, rule)
+
+    def _cookie(self, token: str, secure: bool) -> dict:
+        policy = self.engine.policy
+        return {
+            "key": policy.cookie_name,
+            "value": token,
+            "max_age": policy.cookie_ttl,
+            "path": "/",
+            "domain": policy.cookie_domain,
+            "httponly": True,
+            "samesite": policy.cookie_samesite,
+            "secure": policy.cookie_secure and secure,
+        }
+
     def _is_json(self, request: Request) -> bool:
         if callable(self._json_mode):
             return self._json_mode(request)
@@ -235,7 +229,8 @@ class Vouch:
     ) -> _Response:
         policy = self.engine.policy
         if not self.engine.allow("gen", request, policy.max_challenge_requests):
-            return _error(use_json, 429, "Too Many Requests")
+            self._record("limited", request)
+            return _error(use_json, 429, "Too Many Requests", policy.rate_limit_window)
 
         challenge = self.engine.issue_challenge(difficulty, request)
         path = request["path"]
@@ -263,31 +258,25 @@ class Vouch:
         token = self.engine.validate_challenge(form.get("id", ""), nonce, request)
         use_json = self._is_json(request)
         redirect = safe_redirect(form.get("redirect", "/"))
-        policy = self.engine.policy
 
         if not token:
             return self._verify_failed(request, redirect, use_json)
 
+        self._record("verified", request)
         if use_json:
             return _Response(200, dict(_JSON_CT), json.dumps({"token": token}))
 
-        cookie = {
-            "key": policy.cookie_name,
-            "value": token,
-            "max_age": policy.cookie_ttl,
-            "path": "/",
-            "httponly": True,
-            "samesite": policy.cookie_samesite,
-            "secure": policy.cookie_secure and request.get("secure", False),
-        }
+        cookie = self._cookie(token, request.get("secure", False))
         return _Response(302, {"Location": redirect}, "", cookie=cookie)
 
     def _verify_failed(
         self, request: Request, redirect: str, use_json: bool
     ) -> _Response:
         policy = self.engine.policy
+        self._record("failed", request)
         if not self.engine.allow("fail", request, policy.max_challenge_failures):
-            return _error(use_json, 429, "Too Many Requests")
+            self._record("limited", request)
+            return _error(use_json, 429, "Too Many Requests", policy.rate_limit_window)
 
         if use_json:
             return _error(True, 403, "Invalid")
@@ -307,6 +296,9 @@ class Vouch:
         claims = self.engine.check_cookie(cookie, request)
         if not claims:
             return False
+
+        if self.engine.stale_cookie(claims):
+            request["_refresh"] = self.engine.renew_cookie(request, claims)
 
         request["_claims"] = _make_claims(request["user_agent"], **claims)
         return True
@@ -347,6 +339,7 @@ class Vouch:
             return self._verify_route(request)
 
         if self._verified_claims(request):
+            self._record("pass", request)
             return None
 
         if force:
@@ -358,12 +351,15 @@ class Vouch:
 
         if action == "allow":
             self._allow_claims(request, matched_rule)
+            self._record("allow", request, matched_rule)
             return None
 
         use_json = self._is_json(request)
         if action == "deny" or deny_challenges:
+            self._record("deny", request, matched_rule)
             return _error(use_json, 403, "Forbidden")
 
+        self._record("challenge", request, matched_rule)
         difficulty = difficulty or self.engine.policy.default_difficulty
         return self._challenge(difficulty, request, use_json)
 
@@ -380,12 +376,32 @@ class Vouch:
             return _error(self._is_json(request), 403, "Forbidden")
         return self._handle_verify(request)
 
+    def _styled(self, result: _Response) -> _Response:
+        """Hand plain refusals to an ``ErrorHandler`` when one is installed."""
+        renderer = self.error_renderer
+        if not renderer or result.status < 400 or result.cookie:
+            return result
+        if result.headers.get("Content-Type") != _TEXT_CT["Content-Type"]:
+            return result
+
+        headers = {**result.headers, "Content-Type": "text/html; charset=utf-8"}
+        return _Response(result.status, headers, renderer(result.status))
+
     def _apply(self, request: Request, **kwargs):
         result = self.process_request(request, **kwargs)
         if result:
-            return _to_response(result)
+            return _to_response(self._styled(result))
         flask.g.vouch = request.get("_claims")
+        refreshed = request.get("_refresh")
+        if refreshed:
+            setattr(flask.g, _REFRESH_KEY, refreshed)
         return None
+
+    def _refresh_cookie(self, response: flask.Response) -> flask.Response:
+        token = getattr(flask.g, _REFRESH_KEY, None)
+        if token:
+            response.set_cookie(**self._cookie(token, flask.request.is_secure))
+        return response
 
     def _check(self):
         endpoint = flask.request.endpoint

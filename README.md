@@ -42,7 +42,7 @@ pip install flask-Vouch[audio]      # audio captcha (numpy, scipy)
 
 1. Every suspicious unauthenticated request matching the configured rules is redirected to a challenge page.
 2. A proof-of-work challenge (SHA-256 Balloon by default) is issued.
-3. The browser solves it in JavaScript and POSTs to `/.tollbooth/verify`.
+3. The browser solves it in JavaScript and POSTs to `/.vouch/verify`.
 4. A valid solution sets a signed JWT cookie subsequent requests pass through.
 
 Behind a proxy, set `trusted_proxies` so the client address (used for rate limits
@@ -98,16 +98,23 @@ Pass as kwargs or via `app.config` with the `VOUCH_` prefix:
 | `exclude`                | `[]`                 | Path regexes to skip entirely                         |
 | `json_mode`              | `False`              | Return JSON challenge instead of HTML                 |
 | `trusted_proxies`        | `None`               | Proxy hop count, or the networks they use             |
-| `cookie_name`            | `_tollbooth`         | Access cookie name                                    |
+| `cookie_name`            | `_vouch`             | Access cookie name                                    |
 | `cookie_ttl`             | `604800`             | Cookie lifetime in seconds (7 days)                   |
 | `cookie_secure`          | `True`               | `Secure` flag; only set over HTTPS                    |
 | `cookie_samesite`        | `Lax`                | `SameSite` flag                                       |
 | `bind_ip`                | `False`              | Tie the cookie to the solver's IP                     |
-| `verify_path`            | `/.tollbooth/verify` | Challenge verification endpoint                       |
+| `verify_path`            | `/.vouch/verify`     | Challenge verification endpoint                       |
 | `challenge_handler`      | `SHA256Balloon`      | Challenge implementation                              |
 | `template_dir`           | `None`               | Directory of challenge pages overriding the built-ins |
+| `cookie_domain`          | `None`               | `Domain` flag, to share the cookie across subdomains   |
+| `cookie_refresh`         | `True`               | Reissue the cookie once it is past half its life      |
 | `default_difficulty`     | `10`                 | Difficulty when a rule sets none                      |
 | `challenge_threshold`    | `5`                  | Weight at which `weigh` rules trigger a challenge     |
+| `deny_threshold`         | `0`                  | Weight at which a request is denied, `0` disables it  |
+| `difficulty_step`        | `4`                  | Weight per extra point of difficulty                  |
+| `max_difficulty_bonus`   | `6`                  | Ceiling on that escalation                            |
+| `verify_bots`            | `True`               | Confirm crawler claims by reverse DNS                 |
+| `on_decision`            | `None`               | `(action, request, rule)` callback per decision       |
 | `challenge_ttl`          | `1800`               | Seconds an unsolved challenge stays valid             |
 | `max_challenge_requests` | `10`                 | Challenges per IP per window                          |
 | `max_challenge_failures` | `3`                  | Failed solutions per IP per window                    |
@@ -125,6 +132,10 @@ app.config["VOUCH_COOKIE_TTL"] = 3600
 towers or a laptop changes network. Turn it on when session theft matters more
 than those re-challenges. The challenge itself is always IP-bound, so a solution
 cannot be farmed out to another address.
+
+`cookie_refresh` keeps an active visitor from being re-challenged on a hard
+expiry: past half of `cookie_ttl` the cookie is reissued on the next request, so
+only real absence runs it out.
 
 ### Behind a proxy
 
@@ -174,6 +185,31 @@ def index():
 | `score`           | Attestation score, for handlers that produce one                  |
 | `cid`             | Id of the solved challenge, on cookie-carrying requests           |
 
+## Metrics
+
+Every decision is counted, and `on_decision` forwards it wherever you keep
+telemetry:
+
+```python
+vouch.metrics.snapshot()   # {"allow": 91, "challenge": 12, "pass": 480, ...}
+vouch.metrics.reset()
+
+def record(action, request, rule):
+    statsd.increment(f"vouch.{action}", tags=[f"rule:{rule.name if rule else 'none'}"])
+
+vouch = Vouch(app, secret="s", on_decision=record)
+```
+
+| Action      | Meaning                                        |
+| ----------- | ---------------------------------------------- |
+| `pass`      | Valid access cookie, no evaluation needed      |
+| `allow`     | A rule, or too little weight, let it through   |
+| `challenge` | A challenge page was issued                    |
+| `deny`      | Rule or `deny_threshold` refused the request   |
+| `verified`  | A challenge was solved                         |
+| `failed`    | A wrong solution was posted                    |
+| `limited`   | A per-IP rate limit rejected the request       |
+
 ## Custom rules
 
 ```python
@@ -210,9 +246,53 @@ Rule fields:
 | `remote_addresses` | `list[str]`   | CIDR ranges to match                      |
 | `difficulty`       | `int`         | Challenge difficulty (default: policy)    |
 | `weight`           | `int`         | Score added when `action=weigh`           |
+| `missing_headers`  | `list[str]`   | Match when all named headers are absent or empty |
 | `blocklist`        | `bool`        | Match IPs in the loaded netset            |
 | `bogon_ip`         | `bool`        | Match non-global / bogon IPs              |
 | `crawler`          | `bool`        | Match detected crawler user agents        |
+| `verified_bot`     | `bool`        | Match only crawlers proven by reverse DNS |
+
+`headers` needs the header to be present, `missing_headers` is the opposite test,
+so absent and empty both count. That is what catches a browser user agent sending
+no `Accept-Language`, no `Sec-Fetch-*` and no `Sec-CH-UA`.
+
+### How rules are scored
+
+The first `allow` or `deny` match ends evaluation. A `challenge` match is held
+instead, so the remaining `weigh` rules still run: each `difficulty_step` of
+weight adds a point of difficulty up to `max_difficulty_bonus`, and weight
+reaching `deny_threshold` (`0`, off) denies outright. With no `challenge` match,
+weight at or above `challenge_threshold` issues one at `default_difficulty` plus
+the same bonus.
+
+So a plain browser user agent gets the default challenge; the same request
+missing `Accept`, `Sec-Fetch-*` and `Sec-CH-UA` gets a much harder one.
+
+### Verified crawlers
+
+Allowing Googlebot by user agent allows anyone who types it. `verified_bot` rules
+match only on forward-confirmed reverse DNS: the PTR name must belong to the
+operator (`.googlebot.com`, `.search.msn.com`, ...) and resolve back to the same
+address. Cached an hour per address; operators live in
+`flask_vouch.crawlers.OPERATOR_DOMAINS`.
+
+The default ruleset pairs an `allow` for verified crawlers with a `deny` for
+everything else claiming their names:
+
+```python
+Rule(name="verified", action="allow", verified_bot=True, user_agent="Googlebot"),
+Rule(name="impostors", action="deny", user_agent="Googlebot"),
+```
+
+`verify_bots=False` skips the lookups; `verified_bot` rules then match on the
+user agent alone.
+
+```python
+from flask_vouch import is_verified_bot
+
+is_verified_bot("Googlebot/2.1", "66.249.66.1")   # True
+is_verified_bot("Googlebot/2.1", "8.8.8.8")       # False
+```
 
 ## Challenge types
 
@@ -303,6 +383,10 @@ HMAC-signed, expiring string stored as the challenge's `random_data`, and
 Handlers that render media additionally keep it in a `RenderCache` between
 `generate_random_data` and `render_payload`.
 
+A challenge is one-shot: the first answer submitted for it consumes it, right or
+wrong, so one id cannot be used to guess repeatedly. A wrong answer is served a
+fresh challenge when the handler sets `retry_on_failure`.
+
 A handler raising during generation, rendering or verification is logged on the
 `flask_vouch` logger and answered with `503`, the rest of the site keeps serving.
 
@@ -323,14 +407,20 @@ ns.start_updates()   # auto-refresh daily in a daemon thread
 vouch = Vouch(app, secret="s", blocklist=ns)
 ```
 
-Custom source(s) path or URL:
+Custom source(s) path or URL. `from_sources` loads what it builds, since an
+unloaded netset matches nothing; pass `load=False` to defer:
 
 ```python
 ns = NetSet("https://example.com/bad-ips.netset")
-many = NetSet.from_sources(["a.netset", "b.netset"])
+ns.load()
 
-vouch = Vouch(app, secret="s", blocklist=[ns1, ns2])
+many = NetSet.from_sources(["a.netset", "b.netset"])
+vouch = Vouch(app, secret="s", blocklist=many)
 ```
+
+A netset queried before `load()` answers `False` for every address and logs a
+warning on the `flask_vouch.netset` logger; `ns.loaded` reports the state.
+Fetches time out after 30 seconds.
 
 [FireHOL ipset/netset]: https://github.com/firehol/blocklist-ipsets
 
@@ -350,8 +440,22 @@ engine = RedisEngine(r, secret="s")
 vouch = Vouch(app, engine=engine)
 ```
 
-`RedisNetSet` keeps a blocklist in Redis the same way, with one worker
-refreshing it under a lock.
+The first worker to start seeds the shared policy; later ones adopt what is
+already stored, so restarting a worker cannot wipe a ruleset set with
+`update_rules()`. `update_policy` and `update_rules` push and notify every worker.
+
+```python
+from flask_vouch.redis import RedisNetSet
+
+ns = RedisNetSet(r)
+ns.load()
+ns.start_updates()   # one worker refreshes under a lock
+
+vouch = Vouch(app, engine=engine, blocklist=ns)
+```
+
+Needs Redis 6.2 or newer: a solved challenge is redeemed with `GETDEL`, so one
+solution mints exactly one cookie no matter how many workers race for it.
 
 ## Production checklist
 
@@ -366,8 +470,14 @@ refreshing it under a lock.
   of it with `exclude=[r"^/health"]`.
 - Challenge pages need inline scripts, so keep the shipped
   `Content-Security-Policy` (the response carries its own) intact at the proxy.
-- Watch the `flask_vouch` logger: it reports rate-limit hits at `INFO` and
-  handler failures with a traceback.
+- Watch the `flask_vouch` logger: it reports rate-limit hits and unverified bot
+  claims at `INFO`, handler failures with a traceback.
+- Challenge and refusal responses carry `X-Robots-Tag: noindex, nofollow` and
+  `Referrer-Policy: no-referrer`; rate-limited ones carry `Retry-After`. Do not
+  strip them at the proxy or challenge pages end up in search results.
+- `verify_bots` does a reverse DNS lookup on the first request from each crawler
+  address, cached for an hour. Set `verify_bots=False` where the resolver is slow
+  or unavailable.
 
 ## Package layout
 
@@ -377,9 +487,9 @@ refreshing it under a lock.
 | `engine.py`    | `Engine`: challenges, cookies, rate-limit checks           |
 | `policy.py`    | `Request`, `Rule`, `Policy`, `load_policy`, defaults       |
 | `rendering.py` | Template resolution, challenge page rendering, CSP headers |
-| `stores.py`    | In-memory `ChallengeStore` and `RateLimiter`               |
+| `stores.py`    | In-memory `ChallengeStore`, `RateLimiter`, `Metrics`       |
 | `tokens.py`    | HS256 JWT encode/decode                                    |
-| `crawlers.py`  | User-agent crawler detection                               |
+| `crawlers.py`  | Crawler detection and reverse-DNS bot verification         |
 | `netset.py`    | `NetSet` IP blocklists                                     |
 | `redis.py`     | Redis-backed store, rate limiter, netset and engine        |
 | `challenges/`  | Challenge handlers, their pages and datasets               |
@@ -392,16 +502,20 @@ refreshing it under a lock.
 ```python
 from flask_vouch.extras import ErrorHandler
 
-eh = ErrorHandler(bouncer=vouch)
+eh = ErrorHandler(vouch=vouch)
 eh.init_flask(app)
 ```
+
+Run it after `Vouch.init_app`: `init_flask` then also styles Vouch's own `403`,
+`429` and `503` refusals, which would otherwise be plain text. Values passed to
+`render()` are HTML-escaped and substituted in one pass.
 
 ### RateLimiter
 
 ```python
 from flask_vouch.extras import RateLimiter
 
-rl = RateLimiter(default="100/minute")
+rl = RateLimiter(default="100/minute", trusted_proxies=1)
 rl.exempt("static")
 rl.init_flask(app)
 
@@ -411,7 +525,13 @@ def login(): ...
 ```
 
 `init_flask` buckets per endpoint, so every asset on a page shares one `static`
-budget, exempt it unless you want asset-heavy browsing to hit 429.
+budget, exempt it unless you want asset-heavy browsing to hit 429. A route with
+its own `@limit` keeps only that budget rather than being counted twice.
+
+`trusted_proxies` works exactly as it does on `Vouch`: without it
+`X-Forwarded-For` is ignored, since a client that can set the header freely
+would get a new bucket per request. Behind a proxy you must set it, or everyone
+shares the proxy's single budget. `Retry-After` reports the real window.
 
 ### ThirdPartyCaptcha
 
@@ -455,7 +575,9 @@ secret is unset.
 Altcha is self-hosted proof of work, so it has no site key and `altcha_secret` is
 optional, `init_flask` derives one from `SECRET_KEY` (or the Vouch secret). It
 comes in five difficulties, `{{ altcha1 }}` to `{{ altcha5 }}`, with
-`{{ altcha }}` at level 2.
+`{{ altcha }}` at level 2. Its challenges expire after ten minutes and each one
+is redeemable once; that memory is per process, so across several workers a
+solution stays replayable on the others until it expires.
 
 Outside Jinja:
 
@@ -468,11 +590,17 @@ embed = tpc.get_embed("recaptcha", site_key="...")
 ## Development
 
 ```bash
-pip install -e ".[image,audio]" pytest pytest-cov black isort basedpyright
-pytest                 # suite runs on Python 3.9 - 3.14
+pip install -e ".[image,audio]" pytest pytest-cov black isort basedpyright redis
+pytest                 # suite runs on Python 3.9 - 3.14 in CI
 basedpyright           # type check, targets the oldest supported version
 isort . && black .
 npx prtfm
+```
+
+The Redis tests want a server on port 6399 and skip themselves without one:
+
+```bash
+redis-server --port 6399 --save '' --daemonize yes
 ```
 
 ## License

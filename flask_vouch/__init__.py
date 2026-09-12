@@ -22,7 +22,13 @@ from flask_vouch.challenges import (
     ThirdPartyCaptchaChallenge,
     TraceCaptcha,
 )
-from flask_vouch.crawlers import crawler_name, is_crawler
+from flask_vouch.crawlers import (
+    bot_operator,
+    crawler_name,
+    is_crawler,
+    is_verified_bot,
+    verify_operator,
+)
 from flask_vouch.engine import ChallengeError, Engine, EngineKwargs
 from flask_vouch.extras.third_party_captcha import (
     AltchaCreds,
@@ -74,6 +80,9 @@ __all__ = [
     "load_policy",
     "is_crawler",
     "crawler_name",
+    "is_verified_bot",
+    "verify_operator",
+    "bot_operator",
     "jwt_encode",
     "jwt_decode",
     "ThirdPartyCaptcha",

@@ -112,7 +112,7 @@ return results
 
 
 class DatasetStore:
-    def __init__(self, redis_client: Any = None, prefix: str = "tollbooth"):
+    def __init__(self, redis_client: Any = None, prefix: str = "vouch"):
         self._lock = threading.Lock()
         self._image: dict | None = None
         self._audio: dict | None = None

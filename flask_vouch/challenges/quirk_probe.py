@@ -7,16 +7,9 @@ from dataclasses import dataclass, field
 from pathlib import Path
 
 from .base import ChallengeBase, ChallengeHandler, ChallengeType
-from .scoring import (
-    SessionStore,
-)
+from .scoring import SessionStore
 from .scoring import penalize as _fail
-from .scoring import (
-    rounded,
-    run_checks,
-    score_token,
-    verify_token,
-)
+from .scoring import rounded, run_checks, score_token, verify_token
 
 
 def _check_consistency(report: dict, state: dict) -> None:

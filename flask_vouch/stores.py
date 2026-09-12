@@ -1,12 +1,12 @@
 from __future__ import annotations
 
 import time
-from collections import OrderedDict
+from collections import Counter, OrderedDict
 from threading import Lock
 
 from flask_vouch.challenges import ChallengeBase
+from flask_vouch.policy import CHALLENGE_TTL
 
-CHALLENGE_TTL = 1800
 MAX_CHALLENGES = 100_000
 MAX_RATE_KEYS = 100_000
 
@@ -41,6 +41,19 @@ class ChallengeStore:
                 return None
             return challenge
 
+    def consume(self, challenge_id: str) -> ChallengeBase | None:
+        """Claim an unspent challenge, marking it spent in the same lock so two
+        concurrent solutions cannot both redeem it."""
+        with self._lock:
+            challenge = self._data.get(challenge_id)
+            if not challenge or challenge.spent:
+                return None
+            if challenge.created_at < time.time() - self._ttl:
+                del self._data[challenge_id]
+                return None
+            challenge.spent = True
+            return challenge
+
 
 class RateLimiter:
     """Sliding-window counter per key, with LRU eviction so memory stays bounded."""
@@ -65,3 +78,23 @@ class RateLimiter:
                 self._data.popitem(last=False)
 
             return allowed
+
+
+class Metrics:
+    """Counts what the bouncer decided, for scraping into whatever you use."""
+
+    def __init__(self):
+        self._counts: Counter[str] = Counter()
+        self._lock = Lock()
+
+    def count(self, action: str) -> None:
+        with self._lock:
+            self._counts[action] += 1
+
+    def snapshot(self) -> dict[str, int]:
+        with self._lock:
+            return dict(self._counts)
+
+    def reset(self) -> None:
+        with self._lock:
+            self._counts.clear()

@@ -236,12 +236,20 @@ class TestNetSet:
         assert len(bl) >= 1
 
     def test_from_sources_single(self):
-        result = NetSet.from_sources("https://example.com/x.txt")
+        result = NetSet.from_sources("https://example.com/x.txt", load=False)
         assert isinstance(result, NetSet)
 
     def test_from_sources_list(self):
-        result = NetSet.from_sources(["https://a.com/a.txt", "https://b.com/b.txt"])
+        result = NetSet.from_sources(
+            ["https://a.com/a.txt", "https://b.com/b.txt"], load=False
+        )
         assert len(result) == 2
+
+    def test_from_sources_loads_by_default(self, monkeypatch):
+        loaded = []
+        monkeypatch.setattr(NetSet, "load", lambda self: loaded.append(self._source))
+        NetSet.from_sources(["a.netset", "b.netset"])
+        assert loaded == ["a.netset", "b.netset"]
 
     def test_load_from_file(self):
         with tempfile.NamedTemporaryFile(mode="w", suffix=".txt", delete=False) as f:
@@ -1206,12 +1214,15 @@ class TestChallengeErrors:
 
 class TestCookieBinding:
     def solve(self, engine, request):
+        """A challenge is one-shot, so find the nonce first and submit it once."""
         challenge = engine.issue_challenge(0, request)
-        for nonce in range(200_000):
-            token = engine.validate_challenge(challenge.id, str(nonce), request)
-            if token:
-                return token
-        raise RuntimeError("unsolvable")
+        handler = engine.policy.challenge_handler
+        nonce = next(
+            n
+            for n in range(200_000)
+            if handler.verify(challenge.random_data, n, challenge.difficulty)
+        )
+        return engine.validate_challenge(challenge.id, str(nonce), request)
 
     def make_engine(self, **kwargs):
         return Engine(

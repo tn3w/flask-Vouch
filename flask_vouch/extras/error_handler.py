@@ -1,8 +1,24 @@
 from __future__ import annotations
 
+import html
 from pathlib import Path
 
-_DEFAULT_ACCENT = "#44ff88"
+from flask_vouch.policy import ACCENT_COLOR as _DEFAULT_ACCENT
+
+
+def _fill(template: str, context: dict[str, str]) -> str:
+    """Replace every ``{{key}}`` once, left to right, never rescanning what was
+    just substituted. Unknown placeholders are left as they are."""
+    head, *rest = template.split("{{")
+    parts = [head]
+    for chunk in rest:
+        key, closed, tail = chunk.partition("}}")
+        if closed and key in context:
+            parts.append(context[key] + tail)
+        else:
+            parts.append("{{" + chunk)
+    return "".join(parts)
+
 
 _DEFAULT_TEMPLATE = (Path(__file__).parent / "templates" / "error.html").read_text()
 
@@ -142,9 +158,9 @@ class ErrorHandler:
         eh = ErrorHandler()
         eh.init_flask(app)
 
-    Inherit accent color from a Vouch instance::
+    Inherit accent color from a Vouch instance (or let ``init_flask`` find it)::
 
-        eh = ErrorHandler(bouncer=bouncer)
+        eh = ErrorHandler(vouch=vouch)
 
     Custom accent color::
 
@@ -175,7 +191,7 @@ class ErrorHandler:
         overrides: dict[int, dict] | None = None,
         codes: set[int] | None = None,
         accent_color: str | None = None,
-        bouncer=None,
+        vouch=None,
     ):
         self._template = (
             template.read_text() if isinstance(template, Path) else template
@@ -187,7 +203,7 @@ class ErrorHandler:
         self._overrides = overrides or {}
         self._codes = codes if codes is not None else set(ERROR_CODES)
         self._accent_color = accent_color or (
-            bouncer.engine.policy.accent_color if bouncer else None
+            vouch.engine.policy.accent_color if vouch else None
         )
 
     def _accent(self, flask_app=None) -> str:
@@ -200,20 +216,21 @@ class ErrorHandler:
         return _DEFAULT_ACCENT
 
     def render(self, code: int, accent: str | None = None, **extra) -> str:
+        """Fill the page for ``code``. Every value is HTML-escaped and substituted
+        in a single pass, so one value cannot expand another's placeholder."""
         info = self._overrides.get(code, ERROR_CODES.get(code, {}))
         context = {
             "status_code": str(code),
             "title": info.get("title", "Error"),
             "description": info.get("description", "An error occurred."),
             "ACCENT_COLOR": accent or self._accent_color or _DEFAULT_ACCENT,
-            **extra,
+            **{key: html.escape(str(value)) for key, value in extra.items()},
         }
-        template = self._templates.get(code, self._template)
-        for key, value in context.items():
-            template = template.replace(f"{{{{{key}}}}}", str(value))
-        return template
+        return _fill(self._templates.get(code, self._template), context)
 
     def init_flask(self, app):
+        """Register the pages, and style Vouch's own refusals too when a ``Vouch``
+        is already on the app, so ``init_app`` has to run first."""
         accent = self._accent(app)
 
         def handler(exc):
@@ -225,3 +242,7 @@ class ErrorHandler:
 
         for code in self._codes:
             app.register_error_handler(code, handler)
+
+        vouch = app.extensions.get("vouch")
+        if vouch is not None:
+            vouch.error_renderer = lambda code: self.render(code, accent=accent)

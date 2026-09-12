@@ -28,10 +28,14 @@ _BASE_CSP = (
     "connect-src 'self'"
 )
 
+NOINDEX = "noindex, nofollow"
+
 _BASE_HEADERS = {
     "Content-Type": "text/html; charset=utf-8",
     "Cache-Control": "no-store",
     "X-Content-Type-Options": "nosniff",
+    "X-Robots-Tag": NOINDEX,
+    "Referrer-Policy": "no-referrer",
 }
 
 

@@ -7,7 +7,7 @@
     {
         "name": "known-bad",
         "action": "DENY",
-        "user_agent": "(?i:Sogou|MJ12bot|AhrefsBot|SemrushBot|DotBot|BLEXBot|DataForSeoBot|Bytedance|SerpstatBot|MegaIndex|Seekport|ZoominfoBot|magpie-crawler|Barkrowler|SeznamBot|LinkpadBot|spbot|VelenPublicWebCrawler)"
+        "user_agent": "(?i:MJ12bot|AhrefsBot|SemrushBot|DotBot|BLEXBot|DataForSeoBot|Bytedance|SerpstatBot|MegaIndex|Seekport|ZoominfoBot|magpie-crawler|Barkrowler|LinkpadBot|spbot|VelenPublicWebCrawler)"
     },
     {
         "name": "vuln-scanners",
@@ -75,9 +75,15 @@
         "path": "^/(healthz?|readyz?|livez?|ping|status)$"
     },
     {
-        "name": "search-engines",
+        "name": "verified-search-engines",
         "action": "ALLOW",
-        "user_agent": "(?i:Googlebot|Bingbot|DuckDuckBot|Baiduspider|YandexBot|Applebot)"
+        "verified_bot": true,
+        "user_agent": "(?i:Googlebot|Google-InspectionTool|Storebot-Google|APIs-Google|FeedFetcher-Google|Bingbot|BingPreview|DuckDuckBot|DuckAssistBot|Baiduspider|YandexBot|YandexImages|Applebot|PetalBot|YisouSpider|Sogou|Naver)"
+    },
+    {
+        "name": "search-engine-impostors",
+        "action": "DENY",
+        "user_agent": "(?i:Googlebot|Google-InspectionTool|Storebot-Google|APIs-Google|FeedFetcher-Google|Bingbot|BingPreview|DuckDuckBot|DuckAssistBot|Baiduspider|YandexBot|YandexImages|Applebot|PetalBot|YisouSpider|Sogou|Naver)"
     },
     {
         "name": "feed-readers",
@@ -103,7 +109,7 @@
         "name": "ai-bots",
         "action": "CHALLENGE",
         "difficulty": 14,
-        "user_agent": "(?i:GPTBot|ChatGPT|Claude-Web|ClaudeBot|Anthropic|CCBot|Google-Extended|Bytespider|PetalBot|Diffbot|Cohere-ai|PerplexityBot|YouBot|Amazonbot|Meta-ExternalAgent|Applebot-Extended|Timpibot|ImagesiftBot|OAI-SearchBot)"
+        "user_agent": "(?i:GPTBot|ChatGPT|Claude-Web|ClaudeBot|Anthropic|CCBot|Google-Extended|Bytespider|Diffbot|Cohere-ai|PerplexityBot|YouBot|Amazonbot|Meta-ExternalAgent|Applebot-Extended|Timpibot|ImagesiftBot|OAI-SearchBot)"
     },
     {
         "name": "headless-browsers",
@@ -123,11 +129,6 @@
         "user_agent": "^$"
     },
     {
-        "name": "generic-browser",
-        "action": "CHALLENGE",
-        "user_agent": "Mozilla"
-    },
-    {
         "name": "ip-blocklist",
         "action": "CHALLENGE",
         "blocklist": true
@@ -138,7 +139,7 @@
         "bogon_ip": true
     },
     {
-        "name": "crawler",
+        "name": "unverified-crawler",
         "action": "CHALLENGE",
         "crawler": true
     },
@@ -152,13 +153,33 @@
         "name": "missing-accept",
         "action": "WEIGH",
         "weight": 3,
-        "headers": { "Accept": "^$" }
+        "missing_headers": ["Accept"]
     },
     {
         "name": "missing-accept-language",
         "action": "WEIGH",
         "weight": 2,
-        "headers": { "Accept-Language": "^$" }
+        "missing_headers": ["Accept-Language"]
+    },
+    {
+        "name": "missing-accept-encoding",
+        "action": "WEIGH",
+        "weight": 2,
+        "missing_headers": ["Accept-Encoding"]
+    },
+    {
+        "name": "missing-sec-fetch",
+        "action": "WEIGH",
+        "weight": 3,
+        "user_agent": "(?i:Chrome/|Firefox/|Safari/)",
+        "missing_headers": ["Sec-Fetch-Mode", "Sec-Fetch-Site", "Sec-Fetch-Dest"]
+    },
+    {
+        "name": "chrome-without-client-hints",
+        "action": "WEIGH",
+        "weight": 3,
+        "user_agent": "(?i:Chrome/(?:9[0-9]|[1-9][0-9]{2}))",
+        "missing_headers": ["Sec-CH-UA"]
     },
     {
         "name": "connection-close",
@@ -173,15 +194,16 @@
         "headers": { "Accept": "^\\*/\\*$" }
     },
     {
-        "name": "no-accept-encoding",
-        "action": "WEIGH",
-        "weight": 2,
-        "headers": { "Accept-Encoding": "^$" }
-    },
-    {
         "name": "automation-headers",
         "action": "WEIGH",
         "weight": 4,
-        "headers": { "X-Requested-With": "(?i:scrapy|selenium|webdriver)" }
+        "headers": {
+            "X-Requested-With": "(?i:scrapy|selenium|webdriver|puppeteer)"
+        }
+    },
+    {
+        "name": "generic-browser",
+        "action": "CHALLENGE",
+        "user_agent": "Mozilla"
     }
 ]
