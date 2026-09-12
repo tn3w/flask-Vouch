@@ -1241,3 +1241,72 @@ class TestVersion:
         import flask_vouch
 
         assert flask_vouch.__version__ == version("flask-Vouch")
+
+
+# --- Altcha secret fallback ---
+
+
+class TestAltchaSecret:
+    def make_app(self, secret_key=None):
+        app = flask.Flask(__name__)
+        app.config["SECRET_KEY"] = secret_key
+        return app
+
+    def test_derives_from_secret_key(self):
+        from flask_vouch.extras import ThirdPartyCaptcha
+
+        tpc = ThirdPartyCaptcha()
+        tpc.init_flask(self.make_app(SECRET))
+        assert tpc.altcha is not None
+        assert "altcha" in tpc.get_context()
+
+    def test_derived_key_is_not_the_app_secret(self):
+        from flask_vouch.extras import ThirdPartyCaptcha
+
+        tpc = ThirdPartyCaptcha()
+        tpc.init_flask(self.make_app(SECRET))
+        assert tpc.altcha.secret not in (SECRET, SECRET_BYTES)
+
+    def test_falls_back_to_vouch_secret(self):
+        from flask_vouch.extras import ThirdPartyCaptcha
+
+        app = self.make_app()
+        Vouch(app, secret=SECRET, policy=Policy(rules=[]))
+        tpc = ThirdPartyCaptcha()
+        tpc.init_flask(app)
+        assert tpc.altcha is not None
+
+    def test_explicit_secret_wins(self):
+        from flask_vouch.extras import ThirdPartyCaptcha
+
+        tpc = ThirdPartyCaptcha(altcha_secret="explicit-secret")
+        tpc.init_flask(self.make_app(SECRET))
+        assert tpc.altcha.secret == b"explicit-secret"
+
+    def test_without_any_secret_altcha_stays_off(self):
+        from flask_vouch.extras import ThirdPartyCaptcha
+
+        tpc = ThirdPartyCaptcha()
+        tpc.init_flask(self.make_app())
+        assert tpc.altcha is None
+        assert "altcha" not in tpc.get_context()
+        assert tpc.is_altcha_valid() is False
+
+    def test_derived_key_verifies_its_own_challenge(self):
+        import base64
+        import hashlib
+        import json
+
+        from flask_vouch.extras import ThirdPartyCaptcha
+
+        tpc = ThirdPartyCaptcha()
+        tpc.init_flask(self.make_app(SECRET))
+        challenge = tpc.altcha.create_challenge(1)
+        number = next(
+            n
+            for n in range(200_000)
+            if hashlib.sha256((challenge["salt"] + str(n)).encode()).hexdigest()
+            == challenge["challenge"]
+        )
+        payload = json.dumps({**challenge, "number": number}).encode()
+        assert tpc.altcha.verify_challenge(base64.b64encode(payload).decode())

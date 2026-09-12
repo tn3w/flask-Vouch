@@ -107,6 +107,21 @@ _JS_LOADER = (
 
 _ALTCHA_CDN = "https://cdn.jsdelivr.net/npm/altcha/dist/altcha.min.js"
 
+_ALTCHA_KEY_LABEL = b"flask-vouch-altcha"
+
+
+def _app_altcha_secret(app) -> bytes | None:
+    """Derive Altcha's signing key from the app secret, kept separate from it."""
+    secret = app.config.get("SECRET_KEY")
+    if not secret:
+        vouch = app.extensions.get("vouch")
+        secret = getattr(getattr(vouch, "engine", None), "secret", None)
+    if not secret:
+        return None
+
+    raw = secret.encode() if isinstance(secret, str) else bytes(secret)
+    return hmac.new(raw, _ALTCHA_KEY_LABEL, hashlib.sha256).digest()
+
 
 def _altcha_theme_js(theme: str) -> str:
     light = (
@@ -222,12 +237,19 @@ def _call_geetest_api(
 
 class ThirdPartyCaptcha:
     def __init__(self, language="auto", theme="auto", altcha_secret=None, **kwargs):
+        """Altcha needs a signing key; without one ``init_flask`` derives it from
+        the app's ``SECRET_KEY`` (or the Vouch secret, if that is all there is)."""
         self.language = language
         self.theme = theme
         self.kwargs = kwargs
         self.altcha = _Altcha(altcha_secret.encode()) if altcha_secret else None
 
     def init_flask(self, app):
+        if self.altcha is None:
+            secret = _app_altcha_secret(app)
+            if secret:
+                self.altcha = _Altcha(secret)
+
         @app.context_processor
         def _():
             return self.get_context()

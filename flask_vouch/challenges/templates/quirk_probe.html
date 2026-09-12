@@ -113,7 +113,7 @@
             </svg>
         </div>
         <div id="reflow"></div>
-        <canvas id="canvas" width="200" height="64" style="display:none"></canvas>
+        <canvas id="canvas" width="200" height="64" style="display: none"></canvas>
         <script>
             (function () {
                 var C = JSON.parse('{{CHALLENGE_DATA}}');
@@ -190,8 +190,7 @@
                     ctx.clearRect(0, 0, 200, 64);
                     recipe.shapes.forEach(function (s) {
                         ctx.beginPath();
-                        ctx.fillStyle =
-                            'hsla(' + s.hue + ',70%,50%,' + s.alpha + ')';
+                        ctx.fillStyle = 'hsla(' + s.hue + ',70%,50%,' + s.alpha + ')';
                         ctx.arc(s.x, s.y, s.radius, 0, Math.PI * 2);
                         ctx.fill();
                     });
@@ -258,8 +257,7 @@
                             done({
                                 rafFired: true,
                                 interval: performance.now() - t0,
-                                microtaskOrder:
-                                    order[0] === 'sync' && order[1] === 'micro',
+                                microtaskOrder: order[0] === 'sync' && order[1] === 'micro',
                             });
                         });
                     });
