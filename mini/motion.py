@@ -56,8 +56,14 @@ CONTRADICTION_FIT = 0.35
 MOUSE_PATH_PENALTY = 0.7
 TOUCH_PATH_PENALTY = 0.3
 
-LIMITS = {"m": (3, 600), "c": (6, 100), "k": (2, 200), "s": (3, 300), "tc": (6, 400),
-          "ev": (2, 600)}
+LIMITS = {
+    "m": (3, 600),
+    "c": (6, 100),
+    "k": (2, 200),
+    "s": (3, 300),
+    "tc": (6, 400),
+    "ev": (2, 600),
+}
 
 
 def mean(values) -> float:
@@ -353,7 +359,9 @@ def _check_tremor(points: list, category: Category) -> None:
         window = points[index - 2 : index + 3]
         smooth_x = sum(point[0] for point in window) / 5
         smooth_y = sum(point[1] for point in window) / 5
-        residuals.append(distance(points[index][0], points[index][1], smooth_x, smooth_y))
+        residuals.append(
+            distance(points[index][0], points[index][1], smooth_x, smooth_y)
+        )
 
     tremor = math.sqrt(mean([value * value for value in residuals]))
     if tremor < 0.05:
@@ -413,8 +421,12 @@ def _check_constant_acceleration(points: list, category: Category) -> None:
 
     smooth = 0
     for index in range(3, len(points)):
-        before_x = points[index - 1][0] - 2 * points[index - 2][0] + points[index - 3][0]
-        before_y = points[index - 1][1] - 2 * points[index - 2][1] + points[index - 3][1]
+        before_x = (
+            points[index - 1][0] - 2 * points[index - 2][0] + points[index - 3][0]
+        )
+        before_y = (
+            points[index - 1][1] - 2 * points[index - 2][1] + points[index - 3][1]
+        )
         after_x = points[index][0] - 2 * points[index - 1][0] + points[index - 2][0]
         after_y = points[index][1] - 2 * points[index - 1][1] + points[index - 2][1]
         if math.hypot(after_x - before_x, after_y - before_y) < 1.5:
@@ -474,7 +486,9 @@ def _check_event_clock(points: list, category: Category) -> None:
     common = sum(count for _, count in Counter(intervals).most_common(3))
     share = common / len(intervals)
     if share < 0.45:
-        category.add(0.12, f"Unquantized event clock: top gaps cover {share * 100:.0f}%")
+        category.add(
+            0.12, f"Unquantized event clock: top gaps cover {share * 100:.0f}%"
+        )
     elif share < 0.6:
         category.add(
             0.06, f"Weakly quantized event clock: top gaps cover {share * 100:.0f}%"

@@ -138,7 +138,10 @@ def _check_screen(signals: dict, score: _Score) -> None:
         score.penalize(0.1, "low colorDepth")
     if _number(screen.get("devicePixelRatio")) == 0:
         score.penalize(0.1, "zero devicePixelRatio")
-    if _number(screen.get("outerWidth")) == 0 or _number(screen.get("outerHeight")) == 0:
+    if (
+        _number(screen.get("outerWidth")) == 0
+        or _number(screen.get("outerHeight")) == 0
+    ):
         score.penalize(0.1, "zero outer window size")
 
 
@@ -354,4 +357,3 @@ def score_navigator(signals, headers: dict | None = None) -> dict:
 
     value = round(score.value, 4)
     return {"score": value, "verdict": _verdict(value), "flags": score.flags}
-

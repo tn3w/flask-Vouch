@@ -233,19 +233,61 @@ RULES = [
 ]
 
 CRAWLER_KEYWORDS = (
-    "bot", "crawl", "spider", "scrape", "slurp", "archiv", "headless", "indexer",
-    "preview", "fetch", "monitor", "uptime", "feed", "check", "validator", "scan",
-    "probe", "rank", "analyz", "synthetic", "sitemap", "favicon", "resolver", "sleuth",
-    "ghost", "page speed", "search console", "-publisher", "-agent", "www.",
+    "bot",
+    "crawl",
+    "spider",
+    "scrape",
+    "slurp",
+    "archiv",
+    "headless",
+    "indexer",
+    "preview",
+    "fetch",
+    "monitor",
+    "uptime",
+    "feed",
+    "check",
+    "validator",
+    "scan",
+    "probe",
+    "rank",
+    "analyz",
+    "synthetic",
+    "sitemap",
+    "favicon",
+    "resolver",
+    "sleuth",
+    "ghost",
+    "page speed",
+    "search console",
+    "-publisher",
+    "-agent",
+    "www.",
 )
 
 REAL_BROWSERS = (
-    "opera/", "lynx/", "links ", "links/", "elinks/", "w3m/", "konqueror/", "icab/",
-    "netsurf", "seamonkey/", "iceweasel/",
+    "opera/",
+    "lynx/",
+    "links ",
+    "links/",
+    "elinks/",
+    "w3m/",
+    "konqueror/",
+    "icab/",
+    "netsurf",
+    "seamonkey/",
+    "iceweasel/",
 )
 
 REAL_COMPAT = (
-    "msie", "konqueror", "avant", "maxthon", "sleipnir", "acoo", "slcc", ".net clr",
+    "msie",
+    "konqueror",
+    "avant",
+    "maxthon",
+    "sleipnir",
+    "acoo",
+    "slcc",
+    ".net clr",
     "presto",
 )
 
@@ -677,9 +719,7 @@ class Vouch:
 
     def _grant(self, claims: dict, redirect: str):
         now = int(time.time())
-        sealed = seal(
-            {**claims, "exp": now + self.options["cookie_ttl"]}, self.secret
-        )
+        sealed = seal({**claims, "exp": now + self.options["cookie_ttl"]}, self.secret)
         response = flask.jsonify({"ok": True, "redirect": redirect})
         response.headers["Cache-Control"] = "no-store"
         response.set_cookie(
