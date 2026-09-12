@@ -12,7 +12,9 @@ from .chain_captcha import ChainCaptcha
 from .character_captcha import CharacterCaptcha
 from .circle_captcha import CircleCaptcha
 from .cup_captcha import CupCaptcha
+from .full_attestation import FullAttestation
 from .image_captcha import ImageCaptcha, ImageGridCaptcha
+from .motion import MotionAttestation, score_motion
 from .navigator_attestation import NavigatorAttestation, validate_signals
 from .quirk_probe import QuirkProbe
 from .rotation_captcha import RotationCaptcha
@@ -34,6 +36,8 @@ __all__ = [
     "CircleCaptcha",
     "ImageCaptcha",
     "ImageGridCaptcha",
+    "FullAttestation",
+    "MotionAttestation",
     "NavigatorAttestation",
     "QuirkProbe",
     "RotationCaptcha",
@@ -43,5 +47,6 @@ __all__ = [
     "ThirdPartyCaptchaChallenge",
     "CupCaptcha",
     "TraceCaptcha",
+    "score_motion",
     "validate_signals",
 ]

@@ -1,0 +1,229 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <meta name="robots" content="noindex" />
+        <title>Verifying</title>
+        <style>
+            :root {
+                --bg: #f5f5f5;
+                --text: #111;
+                --surface: #ddd;
+                --muted: #777;
+                --link: #555;
+                --error: #c00;
+                --accent: {{ACCENT_COLOR}};
+            }
+            @media (prefers-color-scheme: dark) {
+                :root {
+                    --bg: #0a0a0a;
+                    --text: #e0e0e0;
+                    --surface: #222;
+                    --muted: #555;
+                    --link: #777;
+                    --error: #f55;
+                }
+            }
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            [hidden] {
+                display: none !important;
+            }
+            body {
+                font-family: system-ui, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                min-height: 100vh;
+                background: var(--bg);
+                color: var(--text);
+            }
+            .box {
+                text-align: center;
+                max-width: 420px;
+                padding: 2rem;
+            }
+            h2 {
+                margin-bottom: 1rem;
+                font-weight: 500;
+            }
+            #status {
+                color: var(--muted);
+                margin-bottom: 1.5rem;
+                font-size: 0.9rem;
+            }
+            button {
+                font: inherit;
+                color: var(--text);
+                background: none;
+                border: 2px solid var(--surface);
+                border-radius: 8px;
+                padding: 0.75rem 1.25rem;
+                cursor: pointer;
+                display: inline-flex;
+                align-items: center;
+                gap: 0.7rem;
+            }
+            button:hover {
+                border-color: var(--accent);
+            }
+            button[disabled] {
+                cursor: default;
+            }
+            .mark {
+                width: 18px;
+                height: 18px;
+                border: 2px solid var(--muted);
+                border-radius: 4px;
+            }
+            .mark.busy {
+                border-radius: 50%;
+                border-color: var(--surface);
+                border-top-color: var(--accent);
+                animation: spin 0.6s linear infinite;
+            }
+            @keyframes spin {
+                to {
+                    transform: rotate(360deg);
+                }
+            }
+            .error {
+                color: var(--error);
+                font-size: 0.85rem;
+                margin-top: 1rem;
+            }
+            .branding {
+                margin-top: 1.5rem;
+                font-size: 0.7rem;
+                color: var(--muted);
+            }
+            .branding a {
+                color: var(--link);
+                text-decoration: none;
+            }
+            .branding a:hover {
+                text-decoration: underline;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="box">
+            <h2>Checking your browser</h2>
+            <p id="status">Starting&#8230;</p>
+            <button id="go" type="button" hidden>
+                <span class="mark" id="mark"></span><span>I am human</span>
+            </button>
+            <noscript><p class="error">JavaScript is required.</p></noscript>
+            {{ERROR}}
+            {{BRANDING}}
+        </div>
+        <script>
+{{include:motion_collector.js}}
+        </script>
+        <script>
+            (function () {
+                var C = JSON.parse('{{CHALLENGE_DATA}}');
+                var status = document.getElementById('status');
+                var button = document.getElementById('go');
+                var mark = document.getElementById('mark');
+                var collector = createMotionCollector();
+                var watchMs = (C.watchSeconds || 6) * 1000;
+                var deadline = watchMs + 6000;
+                var confirmed = false;
+                var sent = false;
+
+                function setError(message) {
+                    status.textContent = message;
+                    status.style.color = 'var(--error)';
+                }
+
+                function post(body, onResult) {
+                    fetch(C.verifyPath, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    })
+                        .then(function (response) {
+                            return response.json();
+                        })
+                        .then(function (message) {
+                            if (message.type === 'error') {
+                                return setError('Verification failed: ' + message.reason);
+                            }
+                            onResult(message);
+                        })
+                        .catch(function () {
+                            setError('Connection error');
+                        });
+                }
+
+                function finish(token) {
+                    status.textContent = 'Verified!';
+                    var form = document.createElement('form');
+                    form.method = 'POST';
+                    form.action = C.verifyPath;
+                    [
+                        ['id', C.id],
+                        ['nonce', token],
+                        ['redirect', C.redirect],
+                    ].forEach(function (pair) {
+                        var input = document.createElement('input');
+                        input.type = 'hidden';
+                        input.name = pair[0];
+                        input.value = pair[1];
+                        form.appendChild(input);
+                    });
+                    document.body.appendChild(form);
+                    form.submit();
+                }
+
+                function send(nonce) {
+                    if (sent) return;
+                    sent = true;
+                    collector.detach();
+                    status.textContent = 'Checking…';
+                    post({ id: C.id, nonce: nonce, motion: collector.data }, function (msg) {
+                        finish(msg.token);
+                    });
+                }
+
+                function watch(nonce) {
+                    if (collector.ready(watchMs) || collector.elapsed() > deadline) {
+                        return send(nonce);
+                    }
+                    setTimeout(function () {
+                        watch(nonce);
+                    }, 400);
+                }
+
+                function start(message) {
+                    watchMs = (message.watchSeconds || C.watchSeconds || 6) * 1000;
+                    deadline = watchMs + 6000;
+
+                    if (!C.interactive) {
+                        status.textContent = 'Watching for a moment…';
+                        return watch(message.nonce);
+                    }
+
+                    status.textContent = 'Confirm you are human to continue.';
+                    button.hidden = false;
+                    button.addEventListener('click', function () {
+                        if (confirmed) return;
+                        confirmed = true;
+                        button.disabled = true;
+                        mark.classList.add('busy');
+                        setTimeout(function () {
+                            send(message.nonce);
+                        }, 250);
+                    });
+                }
+
+                post({ id: C.id, init: true }, start);
+            })();
+        </script>
+    </body>
+</html>

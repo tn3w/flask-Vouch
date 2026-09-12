@@ -20,6 +20,8 @@ class ChallengeType(str, Enum):
     SHA256 = "sha256"
     CHARACTER_CAPTCHA = "character-captcha"
     NAVIGATOR_ATTESTATION = "navigator-attestation"
+    MOTION_ATTESTATION = "motion-attestation"
+    FULL_ATTESTATION = "full-attestation"
     SLIDING_CAPTCHA = "sliding-captcha"
     CIRCLE_CAPTCHA = "circle-captcha"
     THIRD_PARTY_CAPTCHA = "third-party-captcha"
@@ -38,6 +40,8 @@ DIFFICULTY_OFFSETS: dict[ChallengeType, int] = {
     ChallengeType.SHA256: 8,
     ChallengeType.CHARACTER_CAPTCHA: -4,
     ChallengeType.NAVIGATOR_ATTESTATION: 0,
+    ChallengeType.MOTION_ATTESTATION: 0,
+    ChallengeType.FULL_ATTESTATION: 8,
     ChallengeType.SLIDING_CAPTCHA: -4,
     ChallengeType.CIRCLE_CAPTCHA: -4,
     ChallengeType.THIRD_PARTY_CAPTCHA: 0,

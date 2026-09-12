@@ -1,0 +1,276 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <meta name="robots" content="noindex" />
+        <title>Verifying</title>
+        <style>
+            :root {
+                --bg: #f5f5f5;
+                --text: #111;
+                --surface: #ddd;
+                --muted: #777;
+                --link: #555;
+                --error: #c00;
+                --accent: {{ACCENT_COLOR}};
+            }
+            @media (prefers-color-scheme: dark) {
+                :root {
+                    --bg: #0a0a0a;
+                    --text: #e0e0e0;
+                    --surface: #222;
+                    --muted: #555;
+                    --link: #777;
+                    --error: #f55;
+                }
+            }
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            [hidden] {
+                display: none !important;
+            }
+            body {
+                font-family: system-ui, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                min-height: 100vh;
+                background: var(--bg);
+                color: var(--text);
+            }
+            .box {
+                text-align: center;
+                max-width: 420px;
+                padding: 2rem;
+            }
+            h2 {
+                margin-bottom: 1rem;
+                font-weight: 500;
+            }
+            #status {
+                color: var(--muted);
+                margin-bottom: 1.5rem;
+                font-size: 0.9rem;
+            }
+            .bar {
+                width: 100%;
+                height: 4px;
+                background: var(--surface);
+                border-radius: 2px;
+                overflow: hidden;
+            }
+            .fill {
+                height: 100%;
+                background: var(--accent);
+                width: 0;
+                transition: width 0.3s;
+            }
+            button {
+                font: inherit;
+                color: var(--text);
+                background: none;
+                border: 2px solid var(--surface);
+                border-radius: 8px;
+                padding: 0.75rem 1.25rem;
+                cursor: pointer;
+                display: inline-flex;
+                align-items: center;
+                gap: 0.7rem;
+            }
+            button:hover {
+                border-color: var(--accent);
+            }
+            button[disabled] {
+                cursor: default;
+            }
+            .mark {
+                width: 18px;
+                height: 18px;
+                border: 2px solid var(--muted);
+                border-radius: 4px;
+            }
+            .mark.busy {
+                border-radius: 50%;
+                border-color: var(--surface);
+                border-top-color: var(--accent);
+                animation: spin 0.6s linear infinite;
+            }
+            @keyframes spin {
+                to {
+                    transform: rotate(360deg);
+                }
+            }
+            .error {
+                color: var(--error);
+                font-size: 0.85rem;
+                margin-top: 1rem;
+            }
+            .branding {
+                margin-top: 1.5rem;
+                font-size: 0.7rem;
+                color: var(--muted);
+            }
+            .branding a {
+                color: var(--link);
+                text-decoration: none;
+            }
+            .branding a:hover {
+                text-decoration: underline;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="box">
+            <h2>Checking your browser</h2>
+            <p id="status">Starting&#8230;</p>
+            <div class="bar" id="bar" hidden><div class="fill" id="fill"></div></div>
+            <button id="go" type="button" hidden>
+                <span class="mark" id="mark"></span><span>I am human</span>
+            </button>
+            <noscript><p class="error">JavaScript is required.</p></noscript>
+            {{ERROR}}
+            {{BRANDING}}
+        </div>
+        <script>
+{{include:navigator_signals.js}}
+        </script>
+        <script>
+{{include:motion_collector.js}}
+        </script>
+        <script>
+{{include:sha256_miner.js}}
+        </script>
+        <script>
+            (function () {
+                var C = JSON.parse('{{CHALLENGE_DATA}}');
+                var status = document.getElementById('status');
+                var bar = document.getElementById('bar');
+                var fill = document.getElementById('fill');
+                var button = document.getElementById('go');
+                var mark = document.getElementById('mark');
+                var collector = createMotionCollector();
+                var watchMs = (C.watchSeconds || 6) * 1000;
+                var deadline = watchMs + 6000;
+                var startedAt = Date.now();
+                var proof = null;
+                var session = null;
+                var confirmed = false;
+                var sent = false;
+
+                function setError(message) {
+                    status.textContent = message;
+                    status.style.color = 'var(--error)';
+                }
+
+                function post(body, onResult) {
+                    fetch(C.verifyPath, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify(body),
+                    })
+                        .then(function (response) {
+                            return response.json();
+                        })
+                        .then(function (message) {
+                            if (message.type === 'error') {
+                                return setError('Verification failed: ' + message.reason);
+                            }
+                            onResult(message);
+                        })
+                        .catch(function () {
+                            setError('Connection error');
+                        });
+                }
+
+                function finish(token) {
+                    status.textContent = 'Verified!';
+                    var form = document.createElement('form');
+                    form.method = 'POST';
+                    form.action = C.verifyPath;
+                    [
+                        ['id', C.id],
+                        ['nonce', proof + '.' + token],
+                        ['redirect', C.redirect],
+                    ].forEach(function (pair) {
+                        var input = document.createElement('input');
+                        input.type = 'hidden';
+                        input.name = pair[0];
+                        input.value = pair[1];
+                        form.appendChild(input);
+                    });
+                    document.body.appendChild(form);
+                    form.submit();
+                }
+
+                function send() {
+                    if (sent || proof === null || session === null) return;
+                    sent = true;
+                    collector.detach();
+                    status.textContent = 'Checking…';
+                    post(
+                        {
+                            id: C.id,
+                            nonce: session,
+                            signals: collectSignals(),
+                            motion: collector.data,
+                        },
+                        function (message) {
+                            finish(message.token);
+                        }
+                    );
+                }
+
+                function watch() {
+                    var enough = collector.ready(watchMs) || collector.elapsed() > deadline;
+                    if (enough && proof !== null) return send();
+                    setTimeout(watch, 400);
+                }
+
+                function onProgress(hashes) {
+                    if (C.interactive) return;
+                    fill.style.width =
+                        Math.min(95, (hashes / Math.pow(2, C.difficulty)) * 100) + '%';
+                    var seconds = Math.max((Date.now() - startedAt) / 1000, 0.1);
+                    status.textContent = 'Working… ' + Math.round(hashes / seconds) + ' H/s';
+                }
+
+                function onSolved(nonce) {
+                    proof = String(nonce);
+                    fill.style.width = '100%';
+                    if (C.interactive && confirmed) return send();
+                    if (C.interactive) status.textContent = 'Confirm you are human to continue.';
+                }
+
+                function start(message) {
+                    session = message.nonce;
+                    watchMs = (message.watchSeconds || C.watchSeconds || 6) * 1000;
+                    deadline = watchMs + 6000;
+
+                    if (!C.interactive) {
+                        bar.hidden = false;
+                        return watch();
+                    }
+
+                    button.hidden = false;
+                    status.textContent = 'Confirm you are human to continue.';
+                    button.addEventListener('click', function () {
+                        if (confirmed) return;
+                        confirmed = true;
+                        button.disabled = true;
+                        mark.classList.add('busy');
+                        status.textContent =
+                            proof === null ? 'Finishing the proof of work…' : 'Checking…';
+                        setTimeout(send, 250);
+                    });
+                }
+
+                mineProof(C.data, C.difficulty, onProgress, onSolved);
+                post({ id: C.id, init: true }, start);
+            })();
+        </script>
+    </body>
+</html>

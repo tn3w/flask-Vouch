@@ -1,0 +1,926 @@
+<!doctype html>
+<html lang="en">
+    <head>
+        <meta charset="utf-8" />
+        <meta name="viewport" content="width=device-width,initial-scale=1" />
+        <meta name="robots" content="noindex" />
+        <title>Verifying</title>
+        <style>
+            :root {
+                --bg: #f5f5f5;
+                --text: #111;
+                --surface: #ddd;
+                --muted: #777;
+                --error: #c00;
+                --accent: #44ff88;
+            }
+            @media (prefers-color-scheme: dark) {
+                :root {
+                    --bg: #0a0a0a;
+                    --text: #e0e0e0;
+                    --surface: #222;
+                    --muted: #666;
+                    --error: #f55;
+                }
+            }
+            * {
+                margin: 0;
+                padding: 0;
+                box-sizing: border-box;
+            }
+            [hidden] {
+                display: none !important;
+            }
+            body {
+                font-family: system-ui, sans-serif;
+                display: flex;
+                justify-content: center;
+                align-items: center;
+                min-height: 100vh;
+                background: var(--bg);
+                color: var(--text);
+            }
+            .box {
+                text-align: center;
+                max-width: 420px;
+                padding: 2rem;
+            }
+            h1 {
+                font-size: 1.25rem;
+                font-weight: 500;
+                margin-bottom: 0.75rem;
+            }
+            #status {
+                color: var(--muted);
+                font-size: 0.9rem;
+                margin-bottom: 1.25rem;
+            }
+            #bar {
+                width: 100%;
+                height: 4px;
+                background: var(--surface);
+                border-radius: 2px;
+                overflow: hidden;
+            }
+            #fill {
+                height: 100%;
+                width: 0;
+                background: var(--accent);
+                transition: width 0.3s;
+            }
+            button {
+                font: inherit;
+                color: var(--text);
+                background: none;
+                border: 2px solid var(--surface);
+                border-radius: 8px;
+                padding: 0.75rem 1.25rem;
+                cursor: pointer;
+                display: inline-flex;
+                align-items: center;
+                gap: 0.7rem;
+            }
+            button:hover {
+                border-color: var(--accent);
+            }
+            button[disabled] {
+                cursor: default;
+            }
+            .mark {
+                width: 18px;
+                height: 18px;
+                border: 2px solid var(--muted);
+                border-radius: 4px;
+            }
+            .mark.busy {
+                border-radius: 50%;
+                border-color: var(--surface);
+                border-top-color: var(--accent);
+                animation: spin 0.6s linear infinite;
+            }
+            @keyframes spin {
+                to {
+                    transform: rotate(360deg);
+                }
+            }
+            .error {
+                color: var(--error);
+                font-size: 0.85rem;
+                margin-top: 1rem;
+            }
+        </style>
+    </head>
+    <body>
+        <div class="box">
+            <h1>Checking your browser</h1>
+            <p id="status">Starting&#8230;</p>
+            <div id="bar" hidden><div id="fill"></div></div>
+            <button id="go" type="button" hidden>
+                <span class="mark" id="mark"></span><span>I am human</span>
+            </button>
+            <noscript><p class="error">JavaScript is required.</p></noscript>
+        </div>
+        <script>
+            (function () {
+                const CONFIG = JSON.parse('{{CHALLENGE}}');
+                const status = document.getElementById('status');
+                const bar = document.getElementById('bar');
+                const fill = document.getElementById('fill');
+                const button = document.getElementById('go');
+                const mark = document.getElementById('mark');
+
+                const SHA256_K = new Uint32Array([
+                    0x428a2f98, 0x71374491, 0xb5c0fbcf, 0xe9b5dba5, 0x3956c25b, 0x59f111f1, 0x923f82a4,
+                    0xab1c5ed5, 0xd807aa98, 0x12835b01, 0x243185be, 0x550c7dc3, 0x72be5d74, 0x80deb1fe,
+                    0x9bdc06a7, 0xc19bf174, 0xe49b69c1, 0xefbe4786, 0x0fc19dc6, 0x240ca1cc, 0x2de92c6f,
+                    0x4a7484aa, 0x5cb0a9dc, 0x76f988da, 0x983e5152, 0xa831c66d, 0xb00327c8, 0xbf597fc7,
+                    0xc6e00bf3, 0xd5a79147, 0x06ca6351, 0x14292967, 0x27b70a85, 0x2e1b2138, 0x4d2c6dfc,
+                    0x53380d13, 0x650a7354, 0x766a0abb, 0x81c2c92e, 0x92722c85, 0xa2bfe8a1, 0xa81a664b,
+                    0xc24b8b70, 0xc76c51a3, 0xd192e819, 0xd6990624, 0xf40e3585, 0x106aa070, 0x19a4c116,
+                    0x1e376c08, 0x2748774c, 0x34b0bcb5, 0x391c0cb3, 0x4ed8aa4a, 0x5b9cca4f, 0x682e6ff3,
+                    0x748f82ee, 0x78a5636f, 0x84c87814, 0x8cc70208, 0x90befffa, 0xa4506ceb, 0xbef9a3f7,
+                    0xc67178f2,
+                ]);
+
+                const SHA256_IV = [
+                    0x6a09e667, 0xbb67ae85, 0x3c6ef372, 0xa54ff53a, 0x510e527f, 0x9b05688c, 0x1f83d9ab,
+                    0x5be0cd19,
+                ];
+
+                const SHA256_W = new Int32Array(64);
+                const SHA256_STATE = new Int32Array(8);
+
+                /** Hashes `bytes[0..length]` in place, padding the buffer it was given. */
+                function sha256Words(bytes, length) {
+                    const bitLength = length * 8;
+                    const padded = (length + 9 + 63) & ~63;
+                    for (let i = length; i < padded; i++) bytes[i] = 0;
+                    bytes[length] = 0x80;
+                    bytes[padded - 4] = (bitLength >>> 24) & 0xff;
+                    bytes[padded - 3] = (bitLength >>> 16) & 0xff;
+                    bytes[padded - 2] = (bitLength >>> 8) & 0xff;
+                    bytes[padded - 1] = bitLength & 0xff;
+                    for (let i = 0; i < 8; i++) SHA256_STATE[i] = SHA256_IV[i];
+
+                    for (let offset = 0; offset < padded; offset += 64) {
+                        for (let i = 0; i < 16; i++) {
+                            SHA256_W[i] =
+                                (bytes[offset + i * 4] << 24) |
+                                (bytes[offset + i * 4 + 1] << 16) |
+                                (bytes[offset + i * 4 + 2] << 8) |
+                                bytes[offset + i * 4 + 3];
+                        }
+                        for (let i = 16; i < 64; i++) {
+                            const a = SHA256_W[i - 15];
+                            const b = SHA256_W[i - 2];
+                            const s0 = ((a >>> 7) | (a << 25)) ^ ((a >>> 18) | (a << 14)) ^ (a >>> 3);
+                            const s1 = ((b >>> 17) | (b << 15)) ^ ((b >>> 19) | (b << 13)) ^ (b >>> 10);
+                            SHA256_W[i] = (SHA256_W[i - 16] + s0 + SHA256_W[i - 7] + s1) | 0;
+                        }
+                        let [a, b, c, d, e, f, g, h] = SHA256_STATE;
+                        for (let i = 0; i < 64; i++) {
+                            const s1 =
+                                ((e >>> 6) | (e << 26)) ^ ((e >>> 11) | (e << 21)) ^ ((e >>> 25) | (e << 7));
+                            const t1 = (h + s1 + ((e & f) ^ (~e & g)) + SHA256_K[i] + SHA256_W[i]) | 0;
+                            const s0 =
+                                ((a >>> 2) | (a << 30)) ^ ((a >>> 13) | (a << 19)) ^ ((a >>> 22) | (a << 10));
+                            const t2 = (s0 + ((a & b) ^ (a & c) ^ (b & c))) | 0;
+                            h = g; g = f; f = e; e = (d + t1) | 0;
+                            d = c; c = b; b = a; a = (t1 + t2) | 0;
+                        }
+                        SHA256_STATE[0] = (SHA256_STATE[0] + a) | 0;
+                        SHA256_STATE[1] = (SHA256_STATE[1] + b) | 0;
+                        SHA256_STATE[2] = (SHA256_STATE[2] + c) | 0;
+                        SHA256_STATE[3] = (SHA256_STATE[3] + d) | 0;
+                        SHA256_STATE[4] = (SHA256_STATE[4] + e) | 0;
+                        SHA256_STATE[5] = (SHA256_STATE[5] + f) | 0;
+                        SHA256_STATE[6] = (SHA256_STATE[6] + g) | 0;
+                        SHA256_STATE[7] = (SHA256_STATE[7] + h) | 0;
+                    }
+                    return SHA256_STATE;
+                }
+
+                function leadingZeroBits(words) {
+                    for (let i = 0; i < 8; i++) {
+                        if (words[i] !== 0) return i * 32 + Math.clz32(words[i] >>> 0);
+                    }
+                    return 256;
+                }
+
+                const MINE_CHUNK = 2048;
+
+                /** Mines on the page itself, in chunks, so the UI keeps responding. */
+                function mineInline(prefix, difficulty, onProgress, onSolved) {
+                    const encoded = new TextEncoder().encode(prefix);
+                    const buffer = new Uint8Array(encoded.length + 160);
+                    buffer.set(encoded);
+
+                    function hash(nonce) {
+                        const text = String(nonce);
+                        for (let i = 0; i < text.length; i++) {
+                            buffer[encoded.length + i] = text.charCodeAt(i);
+                        }
+                        return sha256Words(buffer, encoded.length + text.length);
+                    }
+
+                    function round(nonce) {
+                        const limit = nonce + MINE_CHUNK;
+                        for (; nonce < limit; nonce++) {
+                            if (leadingZeroBits(hash(nonce)) >= difficulty) return onSolved(nonce);
+                        }
+                        if (onProgress) onProgress(nonce);
+                        setTimeout(function () {
+                            round(nonce);
+                        }, 0);
+                    }
+
+                    round(0);
+                }
+
+                /** Body of each worker: same hash, its own stride of the nonce space. */
+                function mineStride(event) {
+                    const data = event.data;
+                    const encoded = new TextEncoder().encode(data.prefix);
+                    const buffer = new Uint8Array(encoded.length + 160);
+                    buffer.set(encoded);
+                    let nonce = data.workerId;
+                    let tried = 0;
+
+                    for (;;) {
+                        const text = String(nonce);
+                        for (let i = 0; i < text.length; i++) {
+                            buffer[encoded.length + i] = text.charCodeAt(i);
+                        }
+                        const words = sha256Words(buffer, encoded.length + text.length);
+                        if (leadingZeroBits(words) >= data.difficulty) {
+                            self.postMessage({ done: true, nonce: nonce, hashes: tried + 1 });
+                            return;
+                        }
+                        nonce += data.workerCount;
+                        tried++;
+                        if (tried % 2048 === 0) self.postMessage({ done: false, hashes: 2048 });
+                    }
+                }
+
+                function minerSource() {
+                    return (
+                        'const SHA256_K = new Uint32Array([' + Array.from(SHA256_K).join(',') + ']);\n' +
+                        'const SHA256_IV = [' + SHA256_IV.join(',') + '];\n' +
+                        'const SHA256_W = new Int32Array(64);\n' +
+                        'const SHA256_STATE = new Int32Array(8);\n' +
+                        sha256Words.toString() + '\n' +
+                        leadingZeroBits.toString() + '\n' +
+                        'self.onmessage = ' + mineStride.toString() + ';'
+                    );
+                }
+
+                /**
+                 * Mines `sha256(prefix + nonce)` for `difficulty` leading zero bits. Uses one
+                 * worker per core where it can, and the page itself where it cannot.
+                 */
+                function mineProof(prefix, difficulty, onProgress, onSolved) {
+                    let workers = [];
+                    let total = 0;
+                    let solved = false;
+
+                    function stop() {
+                        workers.forEach(function (worker) {
+                            worker.terminate();
+                        });
+                        workers = [];
+                    }
+
+                    function onMessage(event) {
+                        total += event.data.hashes;
+                        if (!event.data.done) return onProgress && onProgress(total);
+                        if (solved) return;
+                        solved = true;
+                        stop();
+                        onSolved(event.data.nonce);
+                    }
+
+                    try {
+                        const blob = new Blob([minerSource()], { type: 'application/javascript' });
+                        const url = URL.createObjectURL(blob);
+                        const count = Math.min(navigator.hardwareConcurrency || 4, 8);
+                        for (let id = 0; id < count; id++) {
+                            const worker = new Worker(url);
+                            worker.onmessage = onMessage;
+                            worker.onerror = function () {
+                                if (solved) return;
+                                solved = true;
+                                stop();
+                                mineInline(prefix, difficulty, onProgress, onSolved);
+                            };
+                            worker.postMessage({
+                                prefix: prefix,
+                                difficulty: difficulty,
+                                workerId: id,
+                                workerCount: count,
+                            });
+                            workers.push(worker);
+                        }
+                    } catch {
+                        stop();
+                        mineInline(prefix, difficulty, onProgress, onSolved);
+                    }
+                }
+
+                const started = Date.now();
+                let solution = null;
+
+                function onProgress(hashes) {
+                    if (CONFIG.interactive) return;
+                    const expected = Math.pow(2, CONFIG.difficulty);
+                    fill.style.width = Math.min(95, (hashes / expected) * 100) + '%';
+                    const seconds = Math.max((Date.now() - started) / 1000, 0.1);
+                    status.textContent =
+                        'Working… ' + Math.round(hashes / seconds) + ' H/s';
+                }
+
+                function onSolved(nonce) {
+                    solution = nonce;
+                    fill.style.width = '100%';
+                    proofDone();
+                }
+
+
+                const LIMITS = { m: 500, c: 50, k: 100, s: 200, tc: 300, ev: 400 };
+                const motion = { m: [], c: [], k: [], s: [], tc: [], ev: [] };
+                const origin = Date.now();
+                const keyDown = new Map();
+                let pressedAt = 0;
+                let lastKeyUp = 0;
+
+                const elapsed = () => Date.now() - origin;
+
+                const record = (key, entry) => {
+                    if (motion[key].length < LIMITS[key]) motion[key].push(entry);
+                };
+
+                const listeners = {
+                    mousemove(event) {
+                        record('m', [
+                            event.clientX + event.movementX * 0.01,
+                            event.clientY + event.movementY * 0.01,
+                            elapsed(),
+                        ]);
+                    },
+                    mousedown() {
+                        pressedAt = elapsed();
+                        record('ev', [1, pressedAt]);
+                    },
+                    mouseup() {
+                        record('ev', [2, elapsed()]);
+                    },
+                    click(event) {
+                        const now = elapsed();
+                        record('ev', [3, now]);
+                        const box = event.target ? event.target.getBoundingClientRect() : null;
+                        const dwell = pressedAt ? now - pressedAt : 0;
+                        pressedAt = 0;
+                        if (!box || !box.width || !box.height) {
+                            return record('c', [0, 0, dwell, 0, 0, now]);
+                        }
+                        record('c', [
+                            event.clientX - (box.left + box.width / 2),
+                            event.clientY - (box.top + box.height / 2),
+                            dwell,
+                            box.width,
+                            box.height,
+                            now,
+                        ]);
+                    },
+                    keydown(event) {
+                        if (!keyDown.has(event.code)) keyDown.set(event.code, elapsed());
+                    },
+                    keyup(event) {
+                        const down = keyDown.get(event.code);
+                        const now = elapsed();
+                        if (down !== undefined) {
+                            record('k', [now - down, lastKeyUp ? down - lastKeyUp : 0]);
+                        }
+                        lastKeyUp = now;
+                        keyDown.delete(event.code);
+                    },
+                    scroll() {
+                        const previous = motion.s.length ? motion.s[motion.s.length - 1][0] : 0;
+                        record('s', [window.scrollY, window.scrollY - previous, elapsed()]);
+                    },
+                    touchstart(event) {
+                        recordTouch(event);
+                    },
+                    touchmove(event) {
+                        recordTouch(event);
+                    },
+                    touchend(event) {
+                        recordTouch(event);
+                    },
+                };
+
+                function recordTouch(event) {
+                    for (const touch of event.changedTouches) {
+                        record('tc', [
+                            touch.clientX,
+                            touch.clientY,
+                            touch.force || 0,
+                            touch.radiusX || 0,
+                            touch.radiusY || 0,
+                            elapsed(),
+                        ]);
+                    }
+                }
+
+                for (const type in listeners) {
+                    const target = type === 'scroll' ? window : document;
+                    target.addEventListener(type, listeners[type], {
+                        passive: true,
+                        capture: true,
+                    });
+                }
+
+                function detach() {
+                    for (const type in listeners) {
+                        const target = type === 'scroll' ? window : document;
+                        target.removeEventListener(type, listeners[type], { capture: true });
+                    }
+                }
+
+                function collectedEnough() {
+                    if (elapsed() < 3000) return false;
+                    return (
+                        motion.m.length >= 10 ||
+                        motion.tc.length >= 5 ||
+                        motion.k.length >= 3 ||
+                        motion.s.length >= 3
+                    );
+                }
+
+                function safe(callback, fallback) {
+                    try {
+                        const value = callback();
+                        return value === undefined ? fallback : value;
+                    } catch {
+                        return fallback;
+                    }
+                }
+
+                function isNative(fn) {
+                    return safe(function () {
+                        return Function.prototype.toString.call(fn).includes('[native code]');
+                    }, false);
+                }
+
+                const AUTOMATION_GLOBALS = [
+                    '_phantom', 'callPhantom', '__nightmare', '__selenium_unwrapped',
+                    '_Selenium_IDE_Recorder', '__selenium_evaluate', '__webdriver_evaluate',
+                    '__webdriver_script_fn', '__webdriver_unwrapped', '__fxdriver_evaluate',
+                    '__driver_evaluate', '__playwright_evaluate', '__pwInitScripts',
+                    '__playwright__binding__', 'playwright', 'Cypress', '__cypress',
+                    'domAutomation', 'domAutomationController', '__phantomas', 'awesomium',
+                    'CefSharp', 'fmget_targets', 'geb', 'wdioElectron', '_WEBDRIVER_ELEM_CACHE',
+                    '$chrome_asyncScriptInfo', '__$webdriverAsyncExecutor',
+                ];
+
+                const CDC_PATTERN = /^\$?cdc_|_Selenium|_selenium|_webdriver|domAutomation/;
+
+                function collectAutomation() {
+                    const found = [];
+                    if (safe(() => navigator.webdriver, false)) found.push('navigator.webdriver');
+                    for (const name of AUTOMATION_GLOBALS) {
+                        if (safe(() => !!window[name], false)) found.push(name);
+                    }
+                    if (safe(() => Object.keys(window).some((k) => CDC_PATTERN.test(k)), false)) {
+                        found.push('cdc globals');
+                    }
+                    if (
+                        safe(
+                            () => Object.getOwnPropertyNames(navigator).includes('webdriver'),
+                            false
+                        )
+                    ) {
+                        found.push('own webdriver property');
+                    }
+                    if (safe(() => /HeadlessChrome|headless/i.test(navigator.userAgent), false)) {
+                        found.push('headless user agent');
+                    }
+                    if (safe(() => !!window.process?.versions?.electron, false)) {
+                        found.push('electron');
+                    }
+                    const stack = safe(() => new Error().stack || '', '');
+                    if (/selenium|webdriver|puppeteer|playwright|cypress|pptr:/i.test(stack)) {
+                        found.push('automation stack frames');
+                    }
+                    const descriptor = safe(
+                        () => Object.getOwnPropertyDescriptor(Navigator.prototype, 'webdriver'),
+                        null
+                    );
+                    if (descriptor?.get && !isNative(descriptor.get)) {
+                        found.push('patched webdriver getter');
+                    }
+                    return found;
+                }
+
+                const NATIVE_TARGETS = [
+                    ['Function.toString', () => Function.prototype.toString],
+                    ['setTimeout', () => window.setTimeout],
+                    ['Date.now', () => Date.now],
+                    ['Math.random', () => Math.random],
+                    ['JSON.stringify', () => JSON.stringify],
+                    ['Object.keys', () => Object.keys],
+                    ['Object.defineProperty', () => Object.defineProperty],
+                    ['Object.getOwnPropertyDescriptor', () => Object.getOwnPropertyDescriptor],
+                    ['Reflect.get', () => Reflect.get],
+                    ['Permissions.query', () => navigator.permissions?.query],
+                    ['toDataURL', () => HTMLCanvasElement.prototype.toDataURL],
+                ];
+
+                function collectTampered() {
+                    const tampered = [];
+                    for (const [name, getter] of NATIVE_TARGETS) {
+                        const fn = safe(getter, null);
+                        if (fn && !isNative(fn)) tampered.push(name);
+                    }
+                    if (safe(() => navigator.toString() !== '[object Navigator]', true)) {
+                        tampered.push('navigator.toString');
+                    }
+                    if (safe(() => navigator[Symbol.toStringTag] !== 'Navigator', true)) {
+                        tampered.push('navigator.toStringTag');
+                    }
+                    return tampered;
+                }
+
+                function countPrototypeLies() {
+                    const properties = ['userAgent', 'platform', 'languages', 'plugins', 'vendor'];
+                    let lies = 0;
+                    for (const property of properties) {
+                        const own = safe(
+                            () => Object.getOwnPropertyDescriptor(navigator, property),
+                            null
+                        );
+                        if (own) lies++;
+                        const inherited = safe(
+                            () => Object.getOwnPropertyDescriptor(Navigator.prototype, property),
+                            null
+                        );
+                        if (inherited?.get && !isNative(inherited.get)) lies++;
+                    }
+                    return lies;
+                }
+
+                const FEATURES = [
+                    'localStorage', 'sessionStorage', 'WebSocket', 'WebGLRenderingContext',
+                    'WebGL2RenderingContext', 'indexedDB', 'fetch', 'Promise', 'Intl',
+                    'PerformanceObserver', 'IntersectionObserver', 'BroadcastChannel',
+                ];
+
+                function collectMissingFeatures() {
+                    return FEATURES.filter((name) => !safe(() => name in window, false));
+                }
+
+                function query(text) {
+                    return safe(() => window.matchMedia(text).matches, false);
+                }
+
+                function collectEngine() {
+                    const stack = safe(() => new Error('detect').stack || '', '');
+                    let style = 'unknown';
+                    if (stack.includes(' at ')) style = 'v8';
+                    else if (stack.includes('@')) style = 'spidermonkey';
+                    else if (stack.includes('global code')) style = 'jsc';
+                    return {
+                        evalLength: safe(() => eval.toString().length, -1),
+                        stackStyle: style,
+                        mathTan: safe(() => Math.tan(-1e308), 0),
+                    };
+                }
+
+                function collectWebGL() {
+                    return safe(function () {
+                        const canvas = document.createElement('canvas');
+                        const gl =
+                            canvas.getContext('webgl') || canvas.getContext('experimental-webgl');
+                        if (!gl) return null;
+                        const debug = gl.getExtension('WEBGL_debug_renderer_info');
+                        return {
+                            vendor: debug ? gl.getParameter(debug.UNMASKED_VENDOR_WEBGL) || '' : '',
+                            renderer: debug
+                                ? gl.getParameter(debug.UNMASKED_RENDERER_WEBGL) || ''
+                                : '',
+                            maxTextureSize: gl.getParameter(gl.MAX_TEXTURE_SIZE) || 0,
+                        };
+                    }, null);
+                }
+
+                function drawSample(context) {
+                    context.fillStyle = '#f60';
+                    context.fillRect(10, 1, 62, 20);
+                    context.fillStyle = '#069';
+                    context.font = '12pt Arial';
+                    context.fillText('vouch,😃', 2, 15);
+                }
+
+                function collectCanvas() {
+                    return safe(
+                        function () {
+                            const canvas = document.createElement('canvas');
+                            canvas.width = 200;
+                            canvas.height = 40;
+                            const context = canvas.getContext('2d');
+                            drawSample(context);
+                            const first = canvas.toDataURL();
+                            drawSample(context);
+                            const second = canvas.toDataURL();
+                            const pixels = context.getImageData(0, 0, 200, 40).data;
+                            let blank = true;
+                            for (let i = 0; i < pixels.length; i += 4) {
+                                if (pixels[i] || pixels[i + 1] || pixels[i + 2]) {
+                                    blank = false;
+                                    break;
+                                }
+                            }
+                            let hash = 0;
+                            for (let i = 0; i < first.length; i++) {
+                                hash = ((hash << 5) - hash + first.charCodeAt(i)) | 0;
+                            }
+                            return {
+                                hash: hash.toString(16),
+                                random: first !== second ? 1 : 0,
+                                blank: blank ? 1 : 0,
+                                error: 0,
+                            };
+                        },
+                        { hash: '', random: 0, blank: 0, error: 1 }
+                    );
+                }
+
+                const FONTS = [
+                    'Arial', 'Verdana', 'Times New Roman', 'Courier New', 'Georgia', 'Impact',
+                    'Tahoma', 'Trebuchet MS', 'Helvetica', 'Segoe UI', 'Roboto', 'Consolas',
+                ];
+
+                function countFonts() {
+                    return safe(function () {
+                        const context = document.createElement('canvas').getContext('2d');
+                        const sample = 'mmmmmmmmlli';
+                        context.font = '72px monospace';
+                        const base = context.measureText(sample).width;
+                        return FONTS.filter(function (font) {
+                            context.font = '72px "' + font + '",monospace';
+                            return context.measureText(sample).width !== base;
+                        }).length;
+                    }, 0);
+                }
+
+                function collectHeadless() {
+                    const screen = window.screen || {};
+                    return {
+                        pdfOff: safe(() => navigator.pdfViewerEnabled === false, false) ? 1 : 0,
+                        noTaskbar:
+                            screen.height === screen.availHeight &&
+                            screen.width === screen.availWidth
+                                ? 1
+                                : 0,
+                        viewportMatch: safe(
+                            () =>
+                                window.visualViewport?.width === screen.width &&
+                                window.visualViewport?.height === screen.height,
+                            false
+                        )
+                            ? 1
+                            : 0,
+                        uadBlank: safe(() => navigator.userAgentData?.platform === '', false)
+                            ? 1
+                            : 0,
+                        iframeProxy: safe(function () {
+                            const frame = document.createElement('iframe');
+                            frame.srcdoc = '';
+                            return frame.contentWindow ? 1 : 0;
+                        }, 0),
+                        runtimeConstructable: safe(
+                            () =>
+                                'prototype' in (window.chrome?.runtime?.sendMessage || {}) ? 1 : 0,
+                            0
+                        ),
+                        activeTextRed: safe(function () {
+                            const node = document.createElement('div');
+                            node.style.display = 'none';
+                            node.style.color = 'ActiveText';
+                            document.body.appendChild(node);
+                            const color = getComputedStyle(node).color;
+                            document.body.removeChild(node);
+                            return color === 'rgb(255, 0, 0)' ? 1 : 0;
+                        }, 0),
+                    };
+                }
+
+                function collectClientHints() {
+                    const data = safe(() => navigator.userAgentData, null);
+                    if (!data) return { hasUAData: false };
+                    const agent = safe(() => navigator.userAgent, '');
+                    const platform = safe(() => (data.platform || '').toLowerCase(), '');
+                    const reported = safe(() => (navigator.platform || '').toLowerCase(), '');
+                    const aligned =
+                        platform === reported ||
+                        (platform.includes('win') && reported.includes('win')) ||
+                        (platform.includes('mac') && reported.includes('mac')) ||
+                        (platform.includes('linux') && reported.includes('linux')) ||
+                        (platform.includes('android') && reported.includes('linux'));
+                    return {
+                        hasUAData: true,
+                        mobileMismatch:
+                            data.mobile !==
+                            (navigator.maxTouchPoints > 0 && /mobile|android/i.test(agent)),
+                        platformMismatch: !!platform && !aligned,
+                    };
+                }
+
+                const CSS_VERSIONS = [
+                    [115, 'scroll-timeline-axis:block'],
+                    [105, ':has(*)'],
+                    [100, 'text-emphasis-color:initial'],
+                    [95, 'accent-color:initial'],
+                    [89, 'border-end-end-radius:initial'],
+                    [88, 'aspect-ratio:initial'],
+                    [84, 'appearance:initial'],
+                    [81, 'color-scheme:initial'],
+                ];
+
+                function detectCssVersion() {
+                    for (const [version, rule] of CSS_VERSIONS) {
+                        if (safe(() => window.CSS.supports(rule), false)) return version;
+                    }
+                    return 0;
+                }
+
+                function detectCdp() {
+                    return safe(function () {
+                        const error = new Error();
+                        let triggered = false;
+                        Object.defineProperty(error, 'stack', {
+                            get() {
+                                triggered = true;
+                                return '';
+                            },
+                        });
+                        console.debug(error);
+                        return triggered ? 1 : 0;
+                    }, 0);
+                }
+
+                function detectIdenticalClock() {
+                    return safe(function () {
+                        const stamps = [];
+                        for (let i = 0; i < 10; i++) stamps.push(performance.now());
+                        const deltas = stamps.slice(1).map((value, i) => value - stamps[i]);
+                        return deltas.every((value) => value === deltas[0]) && deltas[0] > 0
+                            ? 1
+                            : 0;
+                    }, 0);
+                }
+
+                function collectSignals() {
+                    const screen = window.screen || {};
+                    return {
+                        ua: safe(() => navigator.userAgent, ''),
+                        platform: safe(() => navigator.platform, ''),
+                        vendor: safe(() => navigator.vendor, ''),
+                        productSub: safe(() => navigator.productSub, ''),
+                        language: safe(() => navigator.language, ''),
+                        languages: safe(() => Array.from(navigator.languages), []),
+                        hardwareConcurrency: safe(() => navigator.hardwareConcurrency, 0),
+                        deviceMemory: safe(() => navigator.deviceMemory, null),
+                        maxTouchPoints: safe(() => navigator.maxTouchPoints, 0),
+                        pluginCount: safe(() => navigator.plugins.length, 0),
+                        pluginsType: safe(
+                            () => Object.prototype.toString.call(navigator.plugins),
+                            ''
+                        ),
+                        mimeTypesType: safe(
+                            () => Object.prototype.toString.call(navigator.mimeTypes),
+                            ''
+                        ),
+                        automation: collectAutomation(),
+                        tampered: collectTampered(),
+                        protoLies: countPrototypeLies(),
+                        missingFeatures: collectMissingFeatures(),
+                        screen: {
+                            width: screen.width || 0,
+                            height: screen.height || 0,
+                            colorDepth: screen.colorDepth || 0,
+                            devicePixelRatio: window.devicePixelRatio || 0,
+                            outerWidth: window.outerWidth || 0,
+                            outerHeight: window.outerHeight || 0,
+                        },
+                        engine: collectEngine(),
+                        media: {
+                            hover: query('(hover: hover)'),
+                            pointerFine: query('(pointer: fine)'),
+                            touch: safe(() => 'ontouchstart' in window, false),
+                            dimensionLie: !query(
+                                '(device-width:' +
+                                    screen.width +
+                                    'px) and (device-height:' +
+                                    screen.height +
+                                    'px)'
+                            ),
+                        },
+                        timezone: {
+                            offset: safe(() => new Date().getTimezoneOffset(), 0),
+                            name: safe(
+                                () => Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+                                ''
+                            ),
+                        },
+                        webgl: collectWebGL(),
+                        canvas: collectCanvas(),
+                        fonts: countFonts(),
+                        headless: collectHeadless(),
+                        clientHints: collectClientHints(),
+                        cssVersion: detectCssVersion(),
+                        cdp: detectCdp(),
+                        perfNowIdentical: detectIdenticalClock(),
+                        speechVoices: safe(() => speechSynthesis.getVoices().length, -1),
+                        mediaDevices: safe(() => !!navigator.mediaDevices, false),
+                        webrtc: safe(() => !!window.RTCPeerConnection, false),
+                    };
+                }
+
+                function fail(message) {
+                    status.textContent = message;
+                    setTimeout(function () {
+                        location.reload();
+                    }, 2500);
+                }
+
+                let submitted = false;
+
+                function submit() {
+                    if (submitted) return;
+                    submitted = true;
+                    detach();
+                    status.textContent = 'Verifying…';
+
+                    fetch(CONFIG.verifyPath, {
+                        method: 'POST',
+                        headers: { 'Content-Type': 'application/json' },
+                        body: JSON.stringify({
+                            id: CONFIG.id,
+                            nonce: solution,
+                            redirect: CONFIG.redirect,
+                            signals: collectSignals(),
+                            motion: motion,
+                        }),
+                    })
+                        .then(function (response) {
+                            return response.json();
+                        })
+                        .then(function (result) {
+                            if (!result.ok) return fail(result.error || 'Verification failed.');
+                            status.textContent = 'Verified';
+                            location.replace(result.redirect || '/');
+                        })
+                        .catch(function () {
+                            fail('Network error.');
+                        });
+                }
+
+                const PASSIVE_DEADLINE = 9000;
+                let confirmed = false;
+
+                function proofDone() {
+                    if (CONFIG.interactive) {
+                        if (confirmed) submit();
+                        else status.textContent = 'Confirm you are human to continue.';
+                        return;
+                    }
+                    waitForMotion();
+                }
+
+                function waitForMotion() {
+                    if (collectedEnough() || elapsed() > PASSIVE_DEADLINE) return submit();
+                    status.textContent = 'Watching for a moment…';
+                    setTimeout(waitForMotion, 400);
+                }
+
+                button.addEventListener('click', function () {
+                    confirmed = true;
+                    button.disabled = true;
+                    mark.classList.add('busy');
+                    status.textContent =
+                        solution === null ? 'Finishing the proof of work…' : 'Checking…';
+                    if (solution !== null) submit();
+                });
+
+                if (CONFIG.interactive) {
+                    button.hidden = false;
+                    status.textContent = 'Confirm you are human to continue.';
+                } else {
+                    bar.hidden = false;
+                }
+
+                mineProof(CONFIG.data, CONFIG.difficulty, onProgress, onSolved);
+            })();
+        </script>
+    </body>
+</html>

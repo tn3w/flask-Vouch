@@ -61,6 +61,39 @@ def _read_template(path: str) -> str:
     return Path(path).read_text()
 
 
+INCLUDE_OPEN = "{{include:"
+INCLUDE_CLOSE = "}}"
+MAX_INCLUDES = 16
+
+
+def _fragment(name: str, template_dir: str | Path | None) -> str:
+    if "/" in name or "\\" in name or ".." in name:
+        raise ValueError(f"invalid include: {name}")
+
+    override = Path(template_dir) / name if template_dir else None
+    if override and override.exists():
+        return _read_template(str(override))
+    return _read_template(str(TEMPLATES_DIR / name))
+
+
+def _expand_includes(page: str, template_dir: str | Path | None) -> str:
+    """``{{include:name.js}}`` pulls in a shared fragment next to the templates."""
+    for _ in range(MAX_INCLUDES):
+        start = page.find(INCLUDE_OPEN)
+        if start == -1:
+            return page
+
+        end = page.find(INCLUDE_CLOSE, start)
+        if end == -1:
+            return page
+
+        name = page[start + len(INCLUDE_OPEN) : end]
+        body = _fragment(name, template_dir)
+        page = page[:start] + body + page[end + len(INCLUDE_CLOSE) :]
+
+    return page
+
+
 def template_name(handler: ChallengeHandler) -> str:
     return f"{handler.challenge_type.value.replace('-', '_')}.html"
 
@@ -71,17 +104,20 @@ def resolve_template(
 ) -> str:
     """Handler template wins, then ``template_dir``, then the bundled page."""
     if isinstance(handler.template, Path):
-        return _read_template(str(handler.template))
+        return _expand_includes(_read_template(str(handler.template)), template_dir)
     if handler.template is not None:
-        return handler.template
+        return _expand_includes(handler.template, template_dir)
 
     name = template_name(handler)
+    page = None
     if template_dir:
         override = Path(template_dir) / name
         if override.exists():
-            return _read_template(str(override))
+            page = _read_template(str(override))
 
-    return _read_template(str(TEMPLATES_DIR / name))
+    if page is None:
+        page = _read_template(str(TEMPLATES_DIR / name))
+    return _expand_includes(page, template_dir)
 
 
 def _escape_payload(payload: dict) -> str:

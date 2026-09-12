@@ -311,6 +311,8 @@ from flask_vouch import (
     ImageGridCaptcha,           # image grid CAPTCHA        (requires [image])
     AudioCaptcha,               # audio CAPTCHA             (requires [audio])
     NavigatorAttestation,       # browser signal attestation
+    MotionAttestation,          # pointer-movement attestation, nothing to solve
+    FullAttestation,            # proof of work + navigator + motion on one page
     QuirkProbe,                 # browser-engine quirk verification
     ThirdPartyCaptchaChallenge, # embed external CAPTCHAs
 )
@@ -318,10 +320,58 @@ from flask_vouch import (
 vouch = Vouch(app, secret="s", challenge_handler=CharacterCaptcha())
 ```
 
+### Attestation challenges
+
+Three handlers clear a visitor on evidence rather than a puzzle.
+
+`NavigatorAttestation` reads the browser's own internals over several rounds.
+`MotionAttestation` asks for nothing at all: it watches the ordinary mouse, touch,
+keyboard and scroll activity that happens anyway and scores how it moved.
+`FullAttestation` runs all three layers on one page (a SHA-256 proof of work mined
+in Web Workers, the navigator signals, and the movement) and clears the visitor only
+when every layer agrees.
+
+```python
+from flask_vouch import FullAttestation, MotionAttestation, Vouch
+
+vouch = Vouch(app, secret="s", challenge_handler=MotionAttestation())
+
+vouch = Vouch(
+    app,
+    secret="s",
+    challenge_handler=FullAttestation(
+        interactive=True,        # show the "I am human" button, which produces
+        watch_seconds=6,         # a real approach path; False watches quietly
+        min_navigator=0.6,       # navigator score needed to pass
+        trusted_navigator=0.85,  # score that carries a visitor who barely moved
+        min_motion=0.5,          # movement score needed to pass
+    ),
+)
+```
+
+Both watch quietly when `interactive=False`, submitting on their own once enough
+movement has been seen, or after a short deadline.
+
+A `FullAttestation` pass needs all of: a valid proof of work, a navigator score at or
+above `min_navigator` (rising with difficulty), and a motion verdict of `human`, or
+`suspicious` movement carried by a navigator score at or above `trusted_navigator`.
+Scores land in the cookie claims as `score` (navigator) and `motion`.
+
+Movement is scored in five categories (path kinematics, trace texture, injected-input
+dispatch, transcript contract and evidence), with any conclusive category capping the
+whole score, so one synthetic channel is not averaged away. Measured against the
+`motion-attestation` corpus: 25 of 27 real captures read `human`, and 11 of 14 path
+generators read `suspicious` or `bot`. Kinematically faithful mimics still clear the
+movement layer on geometry alone, which is what the proof of work and the navigator
+signals are there for.
+
 ### Custom challenge pages
 
 Every challenge ships a page; replace it per handler or per directory. A `Path`
-is read from disk, a `str` is the page itself:
+is read from disk, a `str` is the page itself. Pages share fragments through
+`{{include:name.js}}`, resolved against the template directory then the bundled
+one. `navigator_signals.js`, `motion_collector.js` and `sha256_miner.js` are the
+shipped fragments:
 
 ```python
 from pathlib import Path
@@ -493,6 +543,7 @@ solution mints exactly one cookie no matter how many workers race for it.
 | `netset.py`    | `NetSet` IP blocklists                                     |
 | `redis.py`     | Redis-backed store, rate limiter, netset and engine        |
 | `challenges/`  | Challenge handlers, their pages and datasets               |
+| `challenges/motion.py` | Motion attestation scoring and `MotionAttestation` |
 | `extras/`      | `ErrorHandler`, `RateLimiter`, `ThirdPartyCaptcha`         |
 
 ## Extras

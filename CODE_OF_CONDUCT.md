@@ -2,7 +2,7 @@
 
 ## Our pledge
 
-We are committed to making participation in this project a welcoming, respectful experience for everyone — regardless of experience level, background, identity, or perspective.
+We are committed to making participation in this project a welcoming, respectful experience for everyone, regardless of experience level, background, identity, or perspective.
 
 ## Standards
 

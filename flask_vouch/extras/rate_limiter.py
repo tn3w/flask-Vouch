@@ -56,7 +56,7 @@ class RateLimiter:
 
     Backends: in-memory LRU (default) or Redis via ``redis_client``.
 
-    Usage — decorator::
+    Decorator usage::
 
         rl = RateLimiter(default="100/minute")
 
@@ -66,7 +66,7 @@ class RateLimiter:
         @rl.exempt
         def health(): ...
 
-    Usage — Flask global::
+    Flask-global usage::
 
         rl.exempt("static")
         rl.init_flask(app, rate="200/minute")
