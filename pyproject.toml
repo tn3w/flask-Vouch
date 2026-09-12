@@ -72,6 +72,9 @@ omit = [
     "flask_vouch/redis.py",
 ]
 
+[tool.isort]
+profile = "black"
+
 [tool.basedpyright]
 include = ["flask_vouch"]
 typeCheckingMode = "standard"
